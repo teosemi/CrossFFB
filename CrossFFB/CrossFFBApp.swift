@@ -9,9 +9,15 @@ import SwiftUI
 
 @main
 struct CrossFFBApp: App {
+    @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
+    @StateObject private var bridgeManager = BridgeManager.shared
+
     var body: some Scene {
-        WindowGroup {
-            ContentView()
+        MenuBarExtra {
+            MenuBarView(bridgeManager: bridgeManager)
+        } label: {
+            Image(systemName: bridgeManager.isRunning ? "steeringwheel.circle.fill" : "steeringwheel.circle")
         }
+        .menuBarExtraStyle(.window)
     }
 }
