@@ -21,7 +21,10 @@ final class ProxyInstaller: ObservableObject {
     }
 
     @Published var gameFolderURL: URL?
-    @Published var exeStatusText: String = "No game folder selected"
+
+    @Published var folderText: String = "No folder selected"
+    @Published var exeText: String = "No executable found"
+
     @Published var exeStatusIcon: String = "questionmark.circle"
     @Published var exeStatusColor: Color = .secondary
 
@@ -29,23 +32,14 @@ final class ProxyInstaller: ObservableObject {
     @Published var proxyStatusIcon: String = "questionmark.circle"
     @Published var proxyStatusColor: Color = .secondary
 
-    @Published var detailText: String = ""
-    @Published var lastActionText: String = ""
     @Published var historyDisplayText: String = "No install history yet"
+    @Published var lastActionText: String = ""
 
     private let proxyFileName = "dinput8.dll"
     private let backupFileName = "dinput8.dll.crossffb_backup"
 
     private var bundledProxyURL: URL? {
         Bundle.main.url(forResource: "dinput8", withExtension: "dll")
-    }
-
-    var gameFolderDisplayText: String {
-        guard let gameFolderURL else {
-            return "No folder selected"
-        }
-
-        return gameFolderURL.path
     }
 
     var canInstallProxy: Bool {
@@ -64,7 +58,9 @@ final class ProxyInstaller: ObservableObject {
 
         let targetProxyURL = gameFolderURL.appendingPathComponent(proxyFileName)
         let backupURL = gameFolderURL.appendingPathComponent(backupFileName)
-        return FileManager.default.fileExists(atPath: targetProxyURL.path) || FileManager.default.fileExists(atPath: backupURL.path)
+
+        return FileManager.default.fileExists(atPath: targetProxyURL.path) ||
+            FileManager.default.fileExists(atPath: backupURL.path)
     }
 
     private init() {
@@ -103,15 +99,14 @@ final class ProxyInstaller: ObservableObject {
 
     func refreshStatus() {
         guard let gameFolderURL else {
-            exeStatusText = "No game folder selected"
+            folderText = "No folder selected"
+            exeText = "No executable found"
             exeStatusIcon = "questionmark.circle"
             exeStatusColor = .secondary
 
             proxyStatusText = "Proxy status unknown"
             proxyStatusIcon = "questionmark.circle"
             proxyStatusColor = .secondary
-
-            detailText = ""
             return
         }
 
@@ -119,35 +114,32 @@ final class ProxyInstaller: ObservableObject {
         var isDirectory: ObjCBool = false
 
         guard fileManager.fileExists(atPath: gameFolderURL.path, isDirectory: &isDirectory), isDirectory.boolValue else {
-            exeStatusText = "Selected folder does not exist"
+            folderText = gameFolderURL.path
+            exeText = "Selected folder does not exist"
             exeStatusIcon = "xmark.circle"
             exeStatusColor = .red
 
             proxyStatusText = "Proxy status unknown"
             proxyStatusIcon = "questionmark.circle"
             proxyStatusColor = .secondary
-
-            detailText = gameFolderURL.path
             return
         }
+
+        folderText = gameFolderURL.path
 
         let exeFiles = findExeFiles(in: gameFolderURL)
 
         if exeFiles.isEmpty {
-            exeStatusText = "No .exe found in selected folder"
+            exeText = "No .exe found"
             exeStatusIcon = "exclamationmark.triangle"
             exeStatusColor = .orange
-        } else if exeFiles.count == 1 {
-            exeStatusText = "Found executable: \(exeFiles[0].lastPathComponent)"
-            exeStatusIcon = "checkmark.circle"
-            exeStatusColor = .green
         } else {
-            exeStatusText = "Found \(exeFiles.count) executables"
+            exeText = exeFiles.map { $0.lastPathComponent }.joined(separator: ", ")
             exeStatusIcon = "checkmark.circle"
             exeStatusColor = .green
         }
 
-        updateProxyStatus(gameFolderURL: gameFolderURL, exeFiles: exeFiles)
+        updateProxyStatus(gameFolderURL: gameFolderURL)
     }
 
     func revealGameFolder() {
@@ -166,7 +158,7 @@ final class ProxyInstaller: ObservableObject {
         }
 
         guard let bundledProxyURL else {
-            lastActionText = "Bundled dinput8.dll not found. Add dinput8.dll to Copy Bundle Resources."
+            lastActionText = "Bundled dinput8.dll not found."
             refreshStatus()
             return
         }
@@ -178,7 +170,7 @@ final class ProxyInstaller: ObservableObject {
         do {
             if fileManager.fileExists(atPath: targetProxyURL.path) {
                 if filesHaveSameSHA256(targetProxyURL, bundledProxyURL) {
-                    lastActionText = "CrossFFB proxy is already installed."
+                    lastActionText = "Proxy is already installed."
                     recordHistory(action: "Already installed", folderURL: gameFolderURL)
                     refreshStatus()
                     return
@@ -186,18 +178,19 @@ final class ProxyInstaller: ObservableObject {
 
                 if !fileManager.fileExists(atPath: backupURL.path) {
                     try fileManager.copyItem(at: targetProxyURL, to: backupURL)
-                    lastActionText = "Existing dinput8.dll backed up and CrossFFB proxy installed."
+                    lastActionText = "Existing dinput8.dll backed up. Proxy installed."
                 } else {
-                    lastActionText = "Existing backup kept and CrossFFB proxy installed."
+                    lastActionText = "Proxy installed. Existing backup kept."
                 }
 
                 try fileManager.removeItem(at: targetProxyURL)
             } else {
-                lastActionText = "CrossFFB proxy installed."
+                lastActionText = "Proxy installed."
             }
 
             try fileManager.copyItem(at: bundledProxyURL, to: targetProxyURL)
             try? fileManager.setAttributes([.posixPermissions: 0o644], ofItemAtPath: targetProxyURL.path)
+
             recordHistory(action: "Installed", folderURL: gameFolderURL)
         } catch {
             lastActionText = "Install failed: \(error.localizedDescription)"
@@ -227,30 +220,30 @@ final class ProxyInstaller: ObservableObject {
                 }
 
                 try fileManager.moveItem(at: backupURL, to: targetProxyURL)
-                lastActionText = "Proxy removed and previous dinput8.dll restored."
+                lastActionText = "Proxy removed. Previous dinput8.dll restored."
                 recordHistory(action: "Removed and restored backup", folderURL: gameFolderURL)
                 refreshStatus()
                 return
             }
 
             guard targetExists else {
-                lastActionText = "No dinput8.dll to remove."
+                lastActionText = "No proxy to remove."
                 refreshStatus()
                 return
             }
 
             guard let bundledProxyURL else {
-                lastActionText = "Bundled dinput8.dll not found. Cannot safely remove target."
+                lastActionText = "Bundled dinput8.dll not found. Remove skipped."
                 refreshStatus()
                 return
             }
 
             if filesHaveSameSHA256(targetProxyURL, bundledProxyURL) {
                 try fileManager.removeItem(at: targetProxyURL)
-                lastActionText = "CrossFFB proxy removed."
+                lastActionText = "Proxy removed."
                 recordHistory(action: "Removed", folderURL: gameFolderURL)
             } else {
-                lastActionText = "Different dinput8.dll found. Not removed for safety."
+                lastActionText = "Different dinput8.dll found. Remove skipped for safety."
                 recordHistory(action: "Remove skipped - different DLL", folderURL: gameFolderURL)
             }
         } catch {
@@ -260,71 +253,66 @@ final class ProxyInstaller: ObservableObject {
         refreshStatus()
     }
 
-    private func updateProxyStatus(gameFolderURL: URL, exeFiles: [URL]) {
+    func clearHistory() {
+        UserDefaults.standard.removeObject(forKey: DefaultsKey.installHistory)
+        historyDisplayText = "No install history yet"
+        lastActionText = "Install history cleared."
+        refreshStatus()
+    }
+
+    private func updateProxyStatus(gameFolderURL: URL) {
+        let fileManager = FileManager.default
         let targetProxyURL = gameFolderURL.appendingPathComponent(proxyFileName)
         let backupURL = gameFolderURL.appendingPathComponent(backupFileName)
 
-        let fileManager = FileManager.default
         let targetExists = fileManager.fileExists(atPath: targetProxyURL.path)
         let backupExists = fileManager.fileExists(atPath: backupURL.path)
 
-        var detailLines: [String] = []
-        detailLines.append("Folder: \(gameFolderURL.path)")
-
-        if exeFiles.isEmpty {
-            detailLines.append("EXE: none")
-        } else {
-            detailLines.append("EXE: \(exeFiles.map { $0.lastPathComponent }.joined(separator: ", "))")
-        }
-
         guard let bundledProxyURL else {
-            proxyStatusText = "Bundled dinput8.dll not found"
+            proxyStatusText = "Proxy source missing"
             proxyStatusIcon = "xmark.circle"
             proxyStatusColor = .red
-
-            detailLines.append("Bundled proxy: missing")
-            appendLastAction(to: &detailLines)
-            detailText = detailLines.joined(separator: "\n")
             return
         }
-
-        detailLines.append("Bundled proxy: \(bundledProxyURL.path)")
 
         guard targetExists else {
-            proxyStatusText = backupExists ? "Proxy missing, backup found" : "Proxy not installed"
+            proxyStatusText = backupExists ? "Not installed, backup found" : "Not installed"
             proxyStatusIcon = backupExists ? "exclamationmark.triangle" : "minus.circle"
             proxyStatusColor = backupExists ? .orange : .secondary
-
-            detailLines.append("Target dinput8.dll: missing")
-            detailLines.append("Backup: \(backupExists ? "present" : "missing")")
-            appendLastAction(to: &detailLines)
-            detailText = detailLines.joined(separator: "\n")
             return
         }
 
-        let sameAsBundled = filesHaveSameSHA256(targetProxyURL, bundledProxyURL)
-
-        if sameAsBundled {
-            proxyStatusText = "CrossFFB proxy installed"
+        if filesHaveSameSHA256(targetProxyURL, bundledProxyURL) {
+            proxyStatusText = "Installed"
             proxyStatusIcon = "checkmark.circle"
             proxyStatusColor = .green
         } else {
-            proxyStatusText = backupExists ? "Different dinput8.dll installed, backup present" : "Different dinput8.dll installed"
+            proxyStatusText = "Different dinput8.dll found"
             proxyStatusIcon = "exclamationmark.triangle"
             proxyStatusColor = .orange
         }
-
-        detailLines.append("Target dinput8.dll: \(targetProxyURL.path)")
-        detailLines.append("Target matches bundled proxy: \(sameAsBundled ? "yes" : "no")")
-        detailLines.append("Backup: \(backupExists ? "present" : "missing")")
-        appendLastAction(to: &detailLines)
-        detailText = detailLines.joined(separator: "\n")
     }
 
-    private func appendLastAction(to lines: inout [String]) {
-        if !lastActionText.isEmpty {
-            lines.append("Last action: \(lastActionText)")
+    private func loadHistory() {
+        let entries = UserDefaults.standard.stringArray(forKey: DefaultsKey.installHistory) ?? []
+        historyDisplayText = entries.isEmpty ? "No install history yet" : entries.joined(separator: "\n")
+    }
+
+    private func recordHistory(action: String, folderURL: URL) {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
+
+        let entry = "[\(formatter.string(from: Date()))] \(action): \(folderURL.path)"
+
+        var entries = UserDefaults.standard.stringArray(forKey: DefaultsKey.installHistory) ?? []
+        entries.append(entry)
+
+        if entries.count > 30 {
+            entries = Array(entries.suffix(30))
         }
+
+        UserDefaults.standard.set(entries, forKey: DefaultsKey.installHistory)
+        historyDisplayText = entries.joined(separator: "\n")
     }
 
     private func findExeFiles(in folderURL: URL) -> [URL] {
@@ -356,34 +344,5 @@ final class ProxyInstaller: ObservableObject {
 
         let digest = SHA256.hash(data: data)
         return digest.map { String(format: "%02x", $0) }.joined()
-    }
-
-    func clearHistory() {
-        UserDefaults.standard.removeObject(forKey: DefaultsKey.installHistory)
-        historyDisplayText = "No install history yet"
-        lastActionText = "Install history cleared."
-        refreshStatus()
-    }
-
-    private func loadHistory() {
-        let entries = UserDefaults.standard.stringArray(forKey: DefaultsKey.installHistory) ?? []
-        historyDisplayText = entries.isEmpty ? "No install history yet" : entries.joined(separator: "\n")
-    }
-
-    private func recordHistory(action: String, folderURL: URL) {
-        let formatter = DateFormatter()
-        formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
-
-        let entry = "[\(formatter.string(from: Date()))] \(action): \(folderURL.path)"
-
-        var entries = UserDefaults.standard.stringArray(forKey: DefaultsKey.installHistory) ?? []
-        entries.append(entry)
-
-        if entries.count > 30 {
-            entries = Array(entries.suffix(30))
-        }
-
-        UserDefaults.standard.set(entries, forKey: DefaultsKey.installHistory)
-        historyDisplayText = entries.joined(separator: "\n")
     }
 }

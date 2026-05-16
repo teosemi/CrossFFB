@@ -22,25 +22,24 @@ struct SetupView: View {
                         .font(.title2)
                         .bold()
 
-                    Text("Configure the Windows proxy for a game folder.")
+                    Text("Install the Windows proxy in a game folder.")
                         .foregroundStyle(.secondary)
+                }
+
+                Spacer()
+
+                Button {
+                    OnboardingWindowController.shared.show()
+                } label: {
+                    Label("Help", systemImage: "questionmark.circle")
                 }
             }
 
             Divider()
 
             VStack(alignment: .leading, spacing: 10) {
-                Text("Windows Proxy")
-                    .font(.headline)
-
-                Text("Choose the folder that contains the game executable. CrossFFB installs dinput8.dll locally in that folder, without changing the whole bottle.")
-                    .fixedSize(horizontal: false, vertical: true)
-                    .foregroundStyle(.secondary)
-            }
-
-            VStack(alignment: .leading, spacing: 10) {
                 HStack {
-                    Text("Game EXE Folder")
+                    Text("Game Folder")
                         .font(.headline)
 
                     Spacer()
@@ -50,7 +49,7 @@ struct SetupView: View {
                     }
                 }
 
-                Text(proxyInstaller.gameFolderDisplayText)
+                Text(proxyInstaller.folderText)
                     .font(.system(size: 11, design: .monospaced))
                     .foregroundStyle(.secondary)
                     .lineLimit(3)
@@ -62,24 +61,24 @@ struct SetupView: View {
             }
 
             VStack(alignment: .leading, spacing: 8) {
-                Text("Status")
+                Text("Executable")
                     .font(.headline)
 
-                Label(proxyInstaller.exeStatusText, systemImage: proxyInstaller.exeStatusIcon)
+                Label(proxyInstaller.exeText, systemImage: proxyInstaller.exeStatusIcon)
                     .foregroundStyle(proxyInstaller.exeStatusColor)
+            }
+
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Proxy")
+                    .font(.headline)
 
                 Label(proxyInstaller.proxyStatusText, systemImage: proxyInstaller.proxyStatusIcon)
                     .foregroundStyle(proxyInstaller.proxyStatusColor)
 
-                if !proxyInstaller.detailText.isEmpty {
-                    Text(proxyInstaller.detailText)
-                        .font(.system(size: 11, design: .monospaced))
+                if !proxyInstaller.lastActionText.isEmpty {
+                    Text(proxyInstaller.lastActionText)
+                        .font(.caption)
                         .foregroundStyle(.secondary)
-                        .textSelection(.enabled)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(8)
-                        .background(Color(nsColor: .textBackgroundColor))
-                        .clipShape(RoundedRectangle(cornerRadius: 6))
                 }
             }
 
@@ -103,7 +102,7 @@ struct SetupView: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(8)
                 }
-                .frame(height: 90)
+                .frame(height: 100)
                 .background(Color(nsColor: .textBackgroundColor))
                 .clipShape(RoundedRectangle(cornerRadius: 6))
             }
@@ -140,7 +139,7 @@ struct SetupView: View {
             }
         }
         .padding(24)
-        .frame(minWidth: 780, minHeight: 650)
+        .frame(minWidth: 720, minHeight: 560)
         .onAppear {
             proxyInstaller.refreshStatus()
         }
