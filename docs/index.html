@@ -1,0 +1,188 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CrossFFB — Logitech G29 Force Feedback on macOS</title>
+  <meta name="description" content="CrossFFB enables Logitech G29 Force Feedback for supported 64-bit Windows games running through CrossOver/Wine on macOS.">
+  <link rel="stylesheet" href="style.css">
+</head>
+
+<body>
+  <header class="nav">
+    <a class="brand" href="#">
+      <span class="brand-icon">◉</span>
+      <span>CrossFFB</span>
+    </a>
+
+    <nav>
+      <a href="#features">Features</a>
+      <a href="#compatibility">Compatibility</a>
+      <a href="#setup">Setup</a>
+      <a href="https://github.com/teosemi/CrossFFB" target="_blank" rel="noopener">GitHub</a>
+    </nav>
+  </header>
+
+  <main>
+    <section class="hero">
+      <p class="eyebrow">Logitech G29 · CrossOver/Wine · macOS</p>
+      <h1>Force Feedback for Windows racing games on macOS.</h1>
+      <p class="subtitle">
+        CrossFFB is a native macOS menu bar app that enables Logitech G29 Force Feedback
+        for supported 64-bit Windows games running through CrossOver/Wine.
+      </p>
+
+      <div class="hero-actions">
+        <a class="button primary" href="https://github.com/teosemi/CrossFFB/releases/latest" target="_blank" rel="noopener">
+          Download
+        </a>
+        <a class="button secondary" href="https://github.com/teosemi/CrossFFB" target="_blank" rel="noopener">
+          View on GitHub
+        </a>
+      </div>
+
+      <p class="note">Open source under the MIT License.</p>
+    </section>
+
+    <section class="showcase">
+      <div class="app-card">
+        <div class="mac-topbar">
+          <span></span><span></span><span></span>
+        </div>
+
+        <div class="app-ui">
+          <div class="app-title">
+            <div>
+              <strong>CrossFFB</strong>
+              <p>Game connected</p>
+            </div>
+            <div class="status-dot"></div>
+          </div>
+
+          <div class="control">
+            <span>FFB Gain</span>
+            <strong>1.00</strong>
+          </div>
+          <div class="slider"><div style="width: 72%"></div></div>
+
+          <div class="control">
+            <span>Steering Range</span>
+            <strong>900°</strong>
+          </div>
+          <div class="slider"><div style="width: 88%"></div></div>
+
+          <div class="mini-buttons">
+            <span>Reset Wheel</span>
+            <span>Stop Bridge</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="features" class="section">
+      <h2>Built for a clean macOS experience.</h2>
+      <div class="grid">
+        <article>
+          <h3>Native bridge</h3>
+          <p>A local macOS bridge talks directly to the Logitech G29 through HID.</p>
+        </article>
+
+        <article>
+          <h3>Local proxy</h3>
+          <p>The dinput8 proxy is installed next to the game executable, not inside Wine system folders.</p>
+        </article>
+
+        <article>
+          <h3>No kernel driver</h3>
+          <p>CrossFFB does not install a macOS driver, kernel extension, or background service.</p>
+        </article>
+
+        <article>
+          <h3>Simple controls</h3>
+          <p>Adjust Force Feedback gain and steering range directly from the menu bar.</p>
+        </article>
+      </div>
+    </section>
+
+    <section id="compatibility" class="section split">
+      <div>
+        <h2>Compatibility</h2>
+        <p>
+          CrossFFB is currently focused on Logitech G29 and 64-bit Windows games running through CrossOver/Wine.
+        </p>
+      </div>
+
+      <div class="list-card">
+        <ul>
+          <li>Logitech G29</li>
+          <li>macOS 14 Sonoma or later</li>
+          <li>CrossOver or Wine</li>
+          <li>64-bit Windows games</li>
+        </ul>
+      </div>
+    </section>
+
+    <section class="section split">
+      <div>
+        <h2>Tested games</h2>
+        <p>
+          CrossFFB has been tested mainly with Euro Truck Simulator 2 and Assetto Corsa Competizione.
+        </p>
+      </div>
+
+      <div class="list-card">
+        <ul>
+          <li>Euro Truck Simulator 2</li>
+          <li>Assetto Corsa Competizione</li>
+        </ul>
+      </div>
+    </section>
+
+    <section id="setup" class="section">
+      <h2>Setup in three steps.</h2>
+
+      <div class="steps">
+        <article>
+          <span>1</span>
+          <h3>Install CrossFFB</h3>
+          <p>Download the signed and notarized DMG from GitHub Releases.</p>
+        </article>
+
+        <article>
+          <span>2</span>
+          <h3>Set dinput8 override</h3>
+          <p>In the CrossOver/Wine bottle, set <code>dinput8</code> to <code>native,builtin</code>.</p>
+        </article>
+
+        <article>
+          <span>3</span>
+          <h3>Install the proxy</h3>
+          <p>Use CrossFFB Setup and choose the folder containing the real game executable.</p>
+        </article>
+      </div>
+
+      <div class="tip">
+        <strong>ACC note:</strong> choose the folder containing <code>AC2-Win64-Shipping.exe</code>, not only <code>acc.exe</code>.
+      </div>
+    </section>
+
+    <section class="cta">
+      <h2>Ready to try CrossFFB?</h2>
+      <p>Download the latest release or inspect the source code on GitHub.</p>
+      <div class="hero-actions">
+        <a class="button primary" href="https://github.com/teosemi/CrossFFB/releases/latest" target="_blank" rel="noopener">
+          Download
+        </a>
+        <a class="button secondary" href="https://github.com/teosemi/CrossFFB" target="_blank" rel="noopener">
+          Source code
+        </a>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <p>Made by Matteo Seminara & Maurizio Seminara.</p>
+    <p>CrossFFB is open source under the MIT License.</p>
+  </footer>
+</body>
+</html>
