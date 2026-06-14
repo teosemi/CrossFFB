@@ -191,7 +191,11 @@ Adjust **Steering Range** from the CrossFFB menu bar.
 
 ## License
 
-CrossFFB is currently distributed as a binary release only.
+CrossFFB is released under the MIT License.
+
+The dinput8 proxy and the native macOS bridge are included in source form and are part of this project.
+
+Made by Matteo Seminara & Maurizio Seminara.
 
 You may download and use CrossFFB for personal use. The source code is not currently published. Redistribution, modification, or repackaging of CrossFFB is not permitted without permission from the authors.
 
