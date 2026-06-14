@@ -1,0 +1,42 @@
+# macOS
+.DS_Store
+
+# Xcode
+DerivedData/
+build/
+Build/
+*.xcworkspace/xcuserdata/
+*.xcodeproj/xcuserdata/
+*.xcuserstate
+*.moved-aside
+*.hmap
+*.ipa
+*.dSYM.zip
+*.dSYM
+*.xcarchive
+
+# SwiftPM
+.build/
+.swiftpm/
+Package.resolved
+
+# Release artifacts
+*.app
+*.dmg
+*.pkg
+*.zip
+
+# Code signing / Apple credentials
+*.cer
+*.p12
+*.mobileprovision
+*.provisionprofile
+AuthKey_*.p8
+
+# Local release folders
+CrossFFB-Release/
+dmg-src/
+dmg-background.png
+
+# Logs
+*.log

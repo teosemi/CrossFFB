@@ -11,6 +11,8 @@ import AppKit
 struct OnboardingView: View {
     @State private var stepIndex: Int = 0
 
+    private let signature = "Made by Matteo Seminara & Maurizio Seminara"
+
     private let steps: [OnboardingStep] = [
         OnboardingStep(
             icon: "steeringwheel",
@@ -112,12 +114,18 @@ struct OnboardingView: View {
 
             Spacer()
 
+            Divider()
+
             HStack {
-                Text("Step \(stepIndex + 1) of \(steps.count)")
+                Text(signature)
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
                 Spacer()
+
+                Text("Step \(stepIndex + 1) of \(steps.count)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
 
                 Button("Back") {
                     stepIndex = max(0, stepIndex - 1)
@@ -139,7 +147,7 @@ struct OnboardingView: View {
             }
         }
         .padding(28)
-        .frame(minWidth: 680, minHeight: 480)
+        .frame(minWidth: 720, minHeight: 500)
     }
 }
 

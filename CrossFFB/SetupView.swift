@@ -109,7 +109,15 @@ struct SetupView: View {
 
             Spacer()
 
+            Divider()
+
             HStack {
+                Text("Made by Matteo Seminara & Maurizio Seminara")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                Spacer()
+
                 Button("Install Proxy") {
                     proxyInstaller.installProxy()
                 }
@@ -130,8 +138,6 @@ struct SetupView: View {
                 }
                 .disabled(proxyInstaller.gameFolderURL == nil)
 
-                Spacer()
-
                 Button("Close") {
                     NSApp.keyWindow?.close()
                 }
@@ -139,7 +145,7 @@ struct SetupView: View {
             }
         }
         .padding(24)
-        .frame(minWidth: 720, minHeight: 560)
+        .frame(minWidth: 760, minHeight: 580)
         .onAppear {
             proxyInstaller.refreshStatus()
         }
