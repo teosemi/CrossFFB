@@ -246,6 +246,23 @@ by the maintainers.
 
 ---
 
+## Troubleshooting the proxy
+
+The proxy writes a short `dinput8_proxy.log` next to the game executable,
+covering startup, the DirectInput handshake and connection errors.
+
+Detailed per-event tracing is off by default, because it used to write one
+line per force update and grew to gigabytes. To turn it back on for
+diagnostics, set this variable in the CrossOver/Wine bottle environment:
+
+```text
+CROSSFFB_PROXY_LOG=1
+```
+
+Expect the log to grow by tens of megabytes per session while it is enabled.
+
+---
+
 ## Current limitations
 
 - Logitech G29 only for now.

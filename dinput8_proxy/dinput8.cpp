@@ -22,7 +22,7 @@ typedef HRESULT (WINAPI *DirectInput8Create_t)(
 
 static DirectInput8Create_t g_realDirectInput8Create = NULL;
 
-static void log_line(const char* fmt, ...)
+static void log_write(const char* fmt, va_list args)
 {
     char exePath[MAX_PATH] = {0};
     char logPath[MAX_PATH] = {0};
@@ -77,13 +77,50 @@ static void log_line(const char* fmt, ...)
         st.wSecond
     );
 
-    va_list args;
-    va_start(args, fmt);
     vfprintf(f, fmt, args);
-    va_end(args);
 
     fprintf(f, "\r\n");
     fclose(f);
+}
+
+static void log_line(const char* fmt, ...)
+{
+    va_list args;
+    va_start(args, fmt);
+    log_write(fmt, args);
+    va_end(args);
+}
+
+// Per-call tracing used to be written unconditionally, one fopen/fclose per
+// line, from the thread delivering force feedback. A single session left
+// gigabytes behind, so it is now opt-in: set CROSSFFB_PROXY_LOG=1 in the
+// bottle environment to get it back for diagnostics.
+static bool verbose_logging_enabled(void)
+{
+    static int enabled = -1;
+
+    if (enabled < 0)
+    {
+        char value[16] = {0};
+        DWORD len = GetEnvironmentVariableA("CROSSFFB_PROXY_LOG", value, sizeof(value));
+
+        enabled = (len > 0 && len < sizeof(value) && value[0] != '0') ? 1 : 0;
+    }
+
+    return enabled == 1;
+}
+
+static void log_verbose(const char* fmt, ...)
+{
+    if (!verbose_logging_enabled())
+    {
+        return;
+    }
+
+    va_list args;
+    va_start(args, fmt);
+    log_write(fmt, args);
+    va_end(args);
 }
 
 static void guid_to_string(REFGUID guid, char* out, size_t outSize)
@@ -419,7 +456,7 @@ static void tcp_send_line(const char* fmt, ...)
         return;
     }
 
-    log_line("TCP sent: %s", line);
+    log_verbose("TCP sent: %s", line);
 }
 
 class FakeDirectInputEffect : public IDirectInputEffect
@@ -437,7 +474,7 @@ public:
         char guidText[64] = {0};
         guid_to_string(guid, guidText, sizeof(guidText));
 
-        log_line(
+        log_verbose(
             "FakeEffect created guid=%s name=%s",
             guidText,
             effect_guid_to_string(guid)
@@ -446,7 +483,7 @@ public:
 
     virtual ~FakeDirectInputEffect()
     {
-        log_line("FakeEffect destroyed");
+        log_verbose("FakeEffect destroyed");
     }
 
     HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void** ppvObject)
@@ -454,7 +491,7 @@ public:
         char iid[64] = {0};
         guid_to_string(riid, iid, sizeof(iid));
 
-        log_line("FakeEffect::QueryInterface riid=%s", iid);
+        log_verbose("FakeEffect::QueryInterface riid=%s", iid);
 
         if (!ppvObject)
         {
@@ -475,14 +512,14 @@ public:
     ULONG STDMETHODCALLTYPE AddRef()
     {
         LONG refs = InterlockedIncrement(&m_refs);
-        log_line("FakeEffect::AddRef refs=%ld", refs);
+        log_verbose("FakeEffect::AddRef refs=%ld", refs);
         return (ULONG)refs;
     }
 
     ULONG STDMETHODCALLTYPE Release()
     {
         LONG refs = InterlockedDecrement(&m_refs);
-        log_line("FakeEffect::Release refs=%ld", refs);
+        log_verbose("FakeEffect::Release refs=%ld", refs);
 
         if (refs == 0)
         {
@@ -498,7 +535,7 @@ public:
         char guidText[64] = {0};
         guid_to_string(rguid, guidText, sizeof(guidText));
 
-        log_line(
+        log_verbose(
             "FakeEffect::Initialize hinst=%p version=0x%08lx guid=%s name=%s",
             hinst,
             (unsigned long)dwVersion,
@@ -511,7 +548,7 @@ public:
 
     HRESULT STDMETHODCALLTYPE GetEffectGuid(LPGUID pguid)
     {
-        log_line("FakeEffect::GetEffectGuid out=%p", pguid);
+        log_verbose("FakeEffect::GetEffectGuid out=%p", pguid);
 
         if (!pguid)
         {
@@ -524,17 +561,17 @@ public:
 
     HRESULT STDMETHODCALLTYPE GetParameters(LPDIEFFECT peff, DWORD dwFlags)
     {
-        log_line("FakeEffect::GetParameters effect=%p flags=0x%08lx", peff, (unsigned long)dwFlags);
+        log_verbose("FakeEffect::GetParameters effect=%p flags=0x%08lx", peff, (unsigned long)dwFlags);
         return DI_OK;
     }
 
     HRESULT STDMETHODCALLTYPE SetParameters(LPCDIEFFECT peff, DWORD dwFlags)
     {
-        log_line("FakeEffect::SetParameters effect=%p flags=0x%08lx", peff, (unsigned long)dwFlags);
+        log_verbose("FakeEffect::SetParameters effect=%p flags=0x%08lx", peff, (unsigned long)dwFlags);
 
         if (peff)
         {
-            log_line(
+            log_verbose(
                 "FakeEffect::SetParameters details: size=%lu flags=0x%08lx duration=%lu samplePeriod=%lu gain=%lu triggerButton=%lu axes=%lu typeSpecificSize=%lu startDelay=%lu",
                 (unsigned long)peff->dwSize,
                 (unsigned long)peff->dwFlags,
@@ -551,7 +588,7 @@ public:
             {
                 for (DWORD i = 0; i < peff->cAxes; ++i)
                 {
-                    log_line(
+                    log_verbose(
                         "FakeEffect::SetParameters axis[%lu]=%lu",
                         (unsigned long)i,
                         (unsigned long)peff->rgdwAxes[i]
@@ -563,7 +600,7 @@ public:
             {
                 for (DWORD i = 0; i < peff->cAxes; ++i)
                 {
-                    log_line(
+                    log_verbose(
                         "FakeEffect::SetParameters direction[%lu]=%ld",
                         (unsigned long)i,
                         (long)peff->rglDirection[i]
@@ -578,7 +615,7 @@ public:
                 DICONSTANTFORCE* cf = (DICONSTANTFORCE*)peff->lpvTypeSpecificParams;
                 m_lastMagnitude = cf->lMagnitude;
 
-                log_line(
+                log_verbose(
                     "FakeEffect::SetParameters ConstantForce magnitude=%ld",
                     (long)cf->lMagnitude
                 );
@@ -599,7 +636,7 @@ public:
             {
                 DICONDITION* cond = (DICONDITION*)peff->lpvTypeSpecificParams;
 
-                log_line(
+                log_verbose(
                     "FakeEffect::SetParameters Condition offset=%ld positiveCoefficient=%ld negativeCoefficient=%ld positiveSaturation=%lu negativeSaturation=%lu deadBand=%ld",
                     (long)cond->lOffset,
                     (long)cond->lPositiveCoefficient,
@@ -632,7 +669,7 @@ public:
 
         m_started = true;
 
-        log_line(
+        log_verbose(
             "FakeEffect::Start guid=%s name=%s iterations=%lu flags=0x%08lx lastMagnitude=%ld",
             guidText,
             effect_guid_to_string(m_guid),
@@ -655,14 +692,14 @@ public:
     HRESULT STDMETHODCALLTYPE Stop()
     {
         m_started = false;
-        log_line("FakeEffect::Stop");
+        log_verbose("FakeEffect::Stop");
         tcp_send_line("STOP");
         return DI_OK;
     }
 
     HRESULT STDMETHODCALLTYPE GetEffectStatus(LPDWORD pdwFlags)
     {
-        log_line("FakeEffect::GetEffectStatus out=%p started=%s", pdwFlags, yes_no(m_started));
+        log_verbose("FakeEffect::GetEffectStatus out=%p started=%s", pdwFlags, yes_no(m_started));
 
         if (pdwFlags)
         {
@@ -674,19 +711,19 @@ public:
 
     HRESULT STDMETHODCALLTYPE Download()
     {
-        log_line("FakeEffect::Download");
+        log_verbose("FakeEffect::Download");
         return DI_OK;
     }
 
     HRESULT STDMETHODCALLTYPE Unload()
     {
-        log_line("FakeEffect::Unload");
+        log_verbose("FakeEffect::Unload");
         return DI_OK;
     }
 
     HRESULT STDMETHODCALLTYPE Escape(LPDIEFFESCAPE pesc)
     {
-        log_line("FakeEffect::Escape escape=%p", pesc);
+        log_verbose("FakeEffect::Escape escape=%p", pesc);
         return DI_OK;
     }
 };
