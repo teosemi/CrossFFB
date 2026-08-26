@@ -46,9 +46,12 @@ final class BridgeManager: ObservableObject {
             return bundledBridgeURL
         }
 
-        let developmentBridgeURL = URL(fileURLWithPath: "/Users/teo/CrossWheelTest/mac_bridge/g29_ffb_bridge")
-        if FileManager.default.fileExists(atPath: developmentBridgeURL.path) {
-            return developmentBridgeURL
+        if let overridePath = ProcessInfo.processInfo.environment["CROSSFFB_BRIDGE_PATH"],
+           !overridePath.isEmpty {
+            let overrideURL = URL(fileURLWithPath: overridePath)
+            if FileManager.default.fileExists(atPath: overrideURL.path) {
+                return overrideURL
+            }
         }
 
         return nil
@@ -94,7 +97,7 @@ final class BridgeManager: ObservableObject {
 
         guard let bridgeURL else {
             statusText = "Bridge file missing"
-            appendLog("CrossFFB: bridge file missing. Add g29_ffb_bridge to the app bundle or keep it at /Users/teo/CrossWheelTest/mac_bridge/g29_ffb_bridge")
+            appendLog("CrossFFB: bridge file missing. Build it with scripts/prepare_resources.sh so it is embedded in the app bundle, or set CROSSFFB_BRIDGE_PATH to an existing g29_ffb_bridge binary.")
             return
         }
 

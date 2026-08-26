@@ -7,16 +7,18 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
-		AB4468E72FB5253500E85D4D /* g29_ffb_bridge in Resources */ = {isa = PBXBuildFile; fileRef = AB4468E62FB5253500E85D4D /* g29_ffb_bridge */; };
 		AB4468E92FB52D1A00E85D4D /* Icona CrossFFB.icon in Resources */ = {isa = PBXBuildFile; fileRef = AB4468E82FB52D1A00E85D4D /* Icona CrossFFB.icon */; };
-		ABBC09082FB9276F00916C3A /* dinput8.dll in Resources */ = {isa = PBXBuildFile; fileRef = ABBC09072FB9276F00916C3A /* dinput8.dll */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
 		AB4468D82FB50E5E00E85D4D /* CrossFFB.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = CrossFFB.app; sourceTree = BUILT_PRODUCTS_DIR; };
-		AB4468E62FB5253500E85D4D /* g29_ffb_bridge */ = {isa = PBXFileReference; lastKnownFileType = "compiled.mach-o.executable"; name = g29_ffb_bridge; path = ../mac_bridge/g29_ffb_bridge; sourceTree = "<group>"; };
 		AB4468E82FB52D1A00E85D4D /* Icona CrossFFB.icon */ = {isa = PBXFileReference; lastKnownFileType = folder.iconcomposer.icon; path = "Icona CrossFFB.icon"; sourceTree = "<group>"; };
-		ABBC09072FB9276F00916C3A /* dinput8.dll */ = {isa = PBXFileReference; lastKnownFileType = file; name = dinput8.dll; path = ../dinput8_probe/dinput8.dll; sourceTree = "<group>"; };
+		CF1000012FC0000000000001 /* g29_ffb_bridge.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = g29_ffb_bridge.c; sourceTree = "<group>"; };
+		CF1000022FC0000000000001 /* dinput8.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = dinput8.cpp; sourceTree = "<group>"; };
+		CF1000032FC0000000000001 /* dinput8.def */ = {isa = PBXFileReference; lastKnownFileType = text; path = dinput8.def; sourceTree = "<group>"; };
+		CF1000042FC0000000000001 /* build_native_bridge.sh */ = {isa = PBXFileReference; lastKnownFileType = text.script.sh; path = build_native_bridge.sh; sourceTree = "<group>"; };
+		CF1000052FC0000000000001 /* build_dinput8_proxy.sh */ = {isa = PBXFileReference; lastKnownFileType = text.script.sh; path = build_dinput8_proxy.sh; sourceTree = "<group>"; };
+		CF1000062FC0000000000001 /* prepare_resources.sh */ = {isa = PBXFileReference; lastKnownFileType = text.script.sh; path = prepare_resources.sh; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -41,12 +43,40 @@
 		AB4468CF2FB50E5E00E85D4D = {
 			isa = PBXGroup;
 			children = (
-				ABBC09072FB9276F00916C3A /* dinput8.dll */,
-				AB4468E62FB5253500E85D4D /* g29_ffb_bridge */,
+				CF10001A2FC0000000000001 /* native_bridge */,
+				CF10001B2FC0000000000001 /* dinput8_proxy */,
+				CF10001C2FC0000000000001 /* scripts */,
 				AB4468E82FB52D1A00E85D4D /* Icona CrossFFB.icon */,
 				AB4468DA2FB50E5E00E85D4D /* CrossFFB */,
 				AB4468D92FB50E5E00E85D4D /* Products */,
 			);
+			sourceTree = "<group>";
+		};
+		CF10001A2FC0000000000001 /* native_bridge */ = {
+			isa = PBXGroup;
+			children = (
+				CF1000012FC0000000000001 /* g29_ffb_bridge.c */,
+			);
+			path = native_bridge;
+			sourceTree = "<group>";
+		};
+		CF10001B2FC0000000000001 /* dinput8_proxy */ = {
+			isa = PBXGroup;
+			children = (
+				CF1000022FC0000000000001 /* dinput8.cpp */,
+				CF1000032FC0000000000001 /* dinput8.def */,
+			);
+			path = dinput8_proxy;
+			sourceTree = "<group>";
+		};
+		CF10001C2FC0000000000001 /* scripts */ = {
+			isa = PBXGroup;
+			children = (
+				CF1000062FC0000000000001 /* prepare_resources.sh */,
+				CF1000042FC0000000000001 /* build_native_bridge.sh */,
+				CF1000052FC0000000000001 /* build_dinput8_proxy.sh */,
+			);
+			path = scripts;
 			sourceTree = "<group>";
 		};
 		AB4468D92FB50E5E00E85D4D /* Products */ = {
@@ -67,7 +97,8 @@
 				AB4468D42FB50E5E00E85D4D /* Sources */,
 				AB4468D52FB50E5E00E85D4D /* Frameworks */,
 				AB4468D62FB50E5E00E85D4D /* Resources */,
-				ABBC09312FBA4EFE00916C3A /* ShellScript */,
+				CF10002A2FC0000000000001 /* Build and Embed Native Resources */,
+				ABBC09312FBA4EFE00916C3A /* Sign Bundled Bridge */,
 			);
 			buildRules = (
 			);
@@ -122,8 +153,6 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				ABBC09082FB9276F00916C3A /* dinput8.dll in Resources */,
-				AB4468E72FB5253500E85D4D /* g29_ffb_bridge in Resources */,
 				AB4468E92FB52D1A00E85D4D /* Icona CrossFFB.icon in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -131,8 +160,28 @@
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXShellScriptBuildPhase section */
-		ABBC09312FBA4EFE00916C3A /* ShellScript */ = {
+		CF10002A2FC0000000000001 /* Build and Embed Native Resources */ = {
 			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+			);
+			name = "Build and Embed Native Resources";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/bash;
+			shellScript = "set -euo pipefail\n\nRESOURCES_DIR=\"${SRCROOT}/build/resources\"\nDEST_DIR=\"${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}\"\n\n\"${SRCROOT}/scripts/prepare_resources.sh\" --output-dir \"${RESOURCES_DIR}\" --arch \"${ARCHS:-arm64 x86_64}\"\n\nmkdir -p \"${DEST_DIR}\"\ncp -f \"${RESOURCES_DIR}/g29_ffb_bridge\" \"${DEST_DIR}/g29_ffb_bridge\"\n\nif [ -f \"${RESOURCES_DIR}/dinput8.dll\" ]; then\n    cp -f \"${RESOURCES_DIR}/dinput8.dll\" \"${DEST_DIR}/dinput8.dll\"\nelse\n    echo \"warning: dinput8.dll was not built; install the cross toolchain with 'brew install mingw-w64' to enable the Windows proxy\"\nfi\n";
+		};
+		ABBC09312FBA4EFE00916C3A /* Sign Bundled Bridge */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
 			buildActionMask = 2147483647;
 			files = (
 			);
@@ -145,8 +194,9 @@
 			outputPaths = (
 			);
 			runOnlyForDeploymentPostprocessing = 0;
-			shellPath = /bin/sh;
-			shellScript = "BRIDGE_PATH=\"${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}/g29_ffb_bridge\"\n\nif [ -f \"$BRIDGE_PATH\" ]; then\n    echo \"Signing bundled bridge with hardened runtime: $BRIDGE_PATH\"\n    /usr/bin/codesign --force --timestamp --options runtime --sign \"${EXPANDED_CODE_SIGN_IDENTITY}\" \"$BRIDGE_PATH\"\nelse\n    echo \"warning: g29_ffb_bridge not found at $BRIDGE_PATH\"\nfi\n";
+			name = "Sign Bundled Bridge";
+			shellPath = /bin/bash;
+			shellScript = "set -euo pipefail\n\nif [ \"${CODE_SIGNING_ALLOWED:-YES}\" = \"NO\" ]; then\n    echo \"Code signing disabled; skipping bridge signature\"\n    exit 0\nfi\n\nBRIDGE_PATH=\"${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}/g29_ffb_bridge\"\n\nif [ ! -f \"$BRIDGE_PATH\" ]; then\n    echo \"warning: g29_ffb_bridge not found at $BRIDGE_PATH\"\n    exit 0\nfi\n\nIDENTITY=\"${EXPANDED_CODE_SIGN_IDENTITY:--}\"\nSIGN_FLAGS=(--force)\n\nif [ \"${ENABLE_HARDENED_RUNTIME:-NO}\" = \"YES\" ]; then\n    SIGN_FLAGS+=(--options runtime)\nfi\n\nif [ \"$IDENTITY\" != \"-\" ]; then\n    SIGN_FLAGS+=(--timestamp)\nfi\n\necho \"Signing bundled bridge: $BRIDGE_PATH (identity: $IDENTITY)\"\n/usr/bin/codesign \"${SIGN_FLAGS[@]}\" --sign \"$IDENTITY\" \"$BRIDGE_PATH\"\n";
 		};
 /* End PBXShellScriptBuildPhase section */
 
@@ -196,7 +246,6 @@
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				COPY_PHASE_STRIP = NO;
 				DEBUG_INFORMATION_FORMAT = dwarf;
-				DEVELOPMENT_TEAM = 84TJ2LG6PJ;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				ENABLE_TESTABILITY = YES;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
@@ -215,7 +264,7 @@
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
-				MACOSX_DEPLOYMENT_TARGET = 26.4;
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
 				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
 				MTL_FAST_MATH = YES;
 				ONLY_ACTIVE_ARCH = YES;
@@ -260,7 +309,6 @@
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				COPY_PHASE_STRIP = NO;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
-				DEVELOPMENT_TEAM = 84TJ2LG6PJ;
 				ENABLE_NS_ASSERTIONS = NO;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
@@ -273,7 +321,7 @@
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
-				MACOSX_DEPLOYMENT_TARGET = 26.4;
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
 				MTL_ENABLE_DEBUG_INFO = NO;
 				MTL_FAST_MATH = YES;
 				SDKROOT = macosx;
@@ -288,13 +336,13 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = NO;
 				AUTOMATION_APPLE_EVENTS = NO;
-				"CODE_SIGN_IDENTITY[sdk=macosx*]" = "Apple Development";
-				CODE_SIGN_STYLE = Automatic;
+				"CODE_SIGN_IDENTITY[sdk=macosx*]" = "-";
+				CODE_SIGN_STYLE = Manual;
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = 84TJ2LG6PJ;
+				DEVELOPMENT_TEAM = "";
 				ENABLE_APP_SANDBOX = NO;
-				ENABLE_HARDENED_RUNTIME = YES;
+				ENABLE_HARDENED_RUNTIME = NO;
 				ENABLE_PREVIEWS = YES;
 				ENABLE_RESOURCE_ACCESS_AUDIO_INPUT = NO;
 				ENABLE_RESOURCE_ACCESS_CALENDARS = NO;

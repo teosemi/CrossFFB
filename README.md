@@ -28,6 +28,7 @@ The app is signed and notarized with Apple Developer ID.
 Currently tested mainly with:
 
 - Euro Truck Simulator 2
+- Assetto Corsa Competizione
 
 ---
 
@@ -180,23 +181,85 @@ Adjust **Steering Range** from the CrossFFB menu bar.
 
 ---
 
+## Building from source
+
+### Requirements
+
+- macOS 14 or later
+- Xcode 16 or later (Command Line Tools included)
+- [mingw-w64](https://www.mingw-w64.org) for the Windows proxy: `brew install mingw-w64`
+
+The mingw-w64 toolchain is only needed to build `dinput8.dll`. Without it the app
+still builds, but it cannot install the proxy into a game folder.
+
+### Build
+
+```bash
+git clone https://github.com/teosemi/CrossFFB.git
+cd CrossFFB
+open CrossFFB.xcodeproj
+```
+
+Then build and run the `CrossFFB` scheme. Xcode compiles both native components
+automatically and embeds them into the app bundle, so no prebuilt binary is needed.
+
+The same build works from the command line:
+
+```bash
+xcodebuild -project CrossFFB.xcodeproj -scheme CrossFFB -configuration Debug build
+```
+
+The Debug configuration signs the app locally, so no Apple Developer account is
+required to build and run it.
+
+### Native components
+
+Both are produced by versioned scripts under `scripts/`:
+
+| Component | Source | Script |
+|---|---|---|
+| `g29_ffb_bridge` | `native_bridge/g29_ffb_bridge.c` | `scripts/build_native_bridge.sh` |
+| `dinput8.dll` | `dinput8_proxy/dinput8.cpp` | `scripts/build_dinput8_proxy.sh` |
+
+To build them outside Xcode:
+
+```bash
+scripts/prepare_resources.sh
+```
+
+The results are written to `build/resources/`, which is not tracked by git. The
+bridge is built as a universal binary (arm64 + x86_64); the Xcode build narrows it
+to whatever architectures the current build is targeting.
+
+### Release builds
+
+The Release configuration signs with the maintainers' Apple Developer ID and
+enables Hardened Runtime. To build Release with your own account, override the
+team:
+
+```bash
+xcodebuild -project CrossFFB.xcodeproj -scheme CrossFFB -configuration Release DEVELOPMENT_TEAM=YOURTEAMID build
+```
+
+Signing, notarization and DMG creation for public releases are handled separately
+by the maintainers.
+
+---
+
 ## Current limitations
 
 - Logitech G29 only for now.
 - 64-bit Windows games only.
-- Tested mainly with Euro Truck Simulator 2.
+- Tested mainly with Euro Truck Simulator 2 and Assetto Corsa Competizione.
+- Tested on Apple Silicon only, although the app and its helper are built as universal binaries.
 - CrossOver/Wine setup still requires manually setting `dinput8 = native,builtin`.
 
 ---
 
 ## License
 
-CrossFFB is released under the MIT License.
+CrossFFB is released under the MIT License. See [LICENSE](LICENSE) for the full text.
 
 The dinput8 proxy and the native macOS bridge are included in source form and are part of this project.
-
-Made by Matteo Seminara & Maurizio Seminara.
-
-You may download and use CrossFFB for personal use. The source code is not currently published. Redistribution, modification, or repackaging of CrossFFB is not permitted without permission from the authors.
 
 Made by Matteo Seminara & Maurizio Seminara.
