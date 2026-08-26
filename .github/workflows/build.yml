@@ -1,0 +1,87 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build from a clean checkout
+    runs-on: macos-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Show toolchain
+        run: |
+          sw_vers
+          xcodebuild -version
+          clang --version | head -1
+
+      # The point of the build scripts is that a clean checkout needs nothing
+      # from the maintainer's machine. Fail loudly if that regresses.
+      # .github is skipped so this check does not match its own pattern.
+      - name: Reject absolute developer paths
+        run: |
+          PATTERN='/Users/'
+          if grep -rn "$PATTERN" --exclude-dir=.git --exclude-dir=.github --exclude-dir=build . ; then
+            echo "::error::Absolute developer paths found in tracked files"
+            exit 1
+          fi
+          echo "No absolute developer paths."
+
+      - name: Install the Windows cross toolchain
+        run: brew install mingw-w64
+
+      - name: Build native components
+        run: scripts/prepare_resources.sh --require-proxy
+
+      - name: Verify native components
+        run: |
+          set -euo pipefail
+
+          BRIDGE_ARCHS="$(lipo -archs build/resources/g29_ffb_bridge)"
+          echo "bridge architectures: ${BRIDGE_ARCHS}"
+
+          # The bridge must cover every architecture the app can be built for.
+          for arch in arm64 x86_64; do
+            case " ${BRIDGE_ARCHS} " in
+              *" ${arch} "*) ;;
+              *) echo "::error::bridge is missing ${arch}"; exit 1 ;;
+            esac
+          done
+
+          # The proxy is loaded by 64-bit Windows games.
+          PROXY_KIND="$(file -b build/resources/dinput8.dll)"
+          echo "proxy: ${PROXY_KIND}"
+          case "${PROXY_KIND}" in
+            PE32+*x86-64*) ;;
+            *) echo "::error::proxy is not a 64-bit Windows DLL"; exit 1 ;;
+          esac
+
+          build/resources/g29_ffb_bridge --help > /dev/null
+
+      # Debug signs locally, so this needs no certificate and no team.
+      - name: Build the app
+        run: |
+          xcodebuild \
+            -project CrossFFB.xcodeproj \
+            -scheme CrossFFB \
+            -configuration Debug \
+            -derivedDataPath "${RUNNER_TEMP}/DerivedData" \
+            build
+
+      - name: Verify the app bundle
+        run: |
+          set -euo pipefail
+          APP="${RUNNER_TEMP}/DerivedData/Build/Products/Debug/CrossFFB.app"
+          test -x "${APP}/Contents/Resources/g29_ffb_bridge"
+          test -f "${APP}/Contents/Resources/dinput8.dll"
+          codesign --verify --deep --strict --verbose=2 "${APP}"
