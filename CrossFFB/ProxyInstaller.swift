@@ -134,9 +134,18 @@ final class ProxyInstaller: ObservableObject {
             exeStatusIcon = "exclamationmark.triangle"
             exeStatusColor = .orange
         } else {
-            exeText = exeFiles.map { $0.lastPathComponent }.joined(separator: ", ")
-            exeStatusIcon = "checkmark.circle"
-            exeStatusColor = .green
+            let inspectedExeFiles = exeFiles.map { ($0, WindowsExecutable.architecture(of: $0)) }
+            let description = describe(inspectedExeFiles)
+
+            if inspectedExeFiles.contains(where: { $0.1.canLoadProxy }) {
+                exeText = description
+                exeStatusIcon = "checkmark.circle"
+                exeStatusColor = .green
+            } else {
+                exeText = "No 64-bit executable here: \(description). Choose the folder that contains the 64-bit game executable."
+                exeStatusIcon = "exclamationmark.triangle"
+                exeStatusColor = .orange
+            }
         }
 
         updateProxyStatus(gameFolderURL: gameFolderURL)
@@ -327,6 +336,20 @@ final class ProxyInstaller: ObservableObject {
         return contents
             .filter { $0.pathExtension.lowercased() == "exe" }
             .sorted { $0.lastPathComponent.localizedCaseInsensitiveCompare($1.lastPathComponent) == .orderedAscending }
+    }
+
+    private func describe(_ inspectedExeFiles: [(URL, WindowsExecutableArchitecture)]) -> String {
+        let maxListed = 4
+        var parts = inspectedExeFiles.prefix(maxListed).map { url, architecture in
+            "\(url.lastPathComponent) (\(architecture.displayName))"
+        }
+
+        let remaining = inspectedExeFiles.count - maxListed
+        if remaining > 0 {
+            parts.append("+\(remaining) more")
+        }
+
+        return parts.joined(separator: ", ")
     }
 
     private func filesHaveSameSHA256(_ firstURL: URL, _ secondURL: URL) -> Bool {
