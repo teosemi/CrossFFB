@@ -28,6 +28,9 @@ final class ProxyInstaller: ObservableObject {
     @Published var exeStatusIcon: String = "questionmark.circle"
     @Published var exeStatusColor: Color = .secondary
 
+    @Published var suggestedFolderURL: URL?
+    @Published var suggestedFolderText: String = ""
+
     @Published var proxyStatusText: String = "Proxy status unknown"
     @Published var proxyStatusIcon: String = "questionmark.circle"
     @Published var proxyStatusColor: Color = .secondary
@@ -103,6 +106,7 @@ final class ProxyInstaller: ObservableObject {
             exeText = "No executable found"
             exeStatusIcon = "questionmark.circle"
             exeStatusColor = .secondary
+            clearFolderSuggestion()
 
             proxyStatusText = "Proxy status unknown"
             proxyStatusIcon = "questionmark.circle"
@@ -118,6 +122,7 @@ final class ProxyInstaller: ObservableObject {
             exeText = "Selected folder does not exist"
             exeStatusIcon = "xmark.circle"
             exeStatusColor = .red
+            clearFolderSuggestion()
 
             proxyStatusText = "Proxy status unknown"
             proxyStatusIcon = "questionmark.circle"
@@ -148,7 +153,20 @@ final class ProxyInstaller: ObservableObject {
             }
         }
 
+        updateFolderSuggestion(for: gameFolderURL)
+
         updateProxyStatus(gameFolderURL: gameFolderURL)
+    }
+
+    func useSuggestedFolder() {
+        guard let suggestedFolderURL else {
+            return
+        }
+
+        gameFolderURL = suggestedFolderURL
+        UserDefaults.standard.set(suggestedFolderURL.path, forKey: DefaultsKey.gameFolderPath)
+        lastActionText = "Selected game folder."
+        refreshStatus()
     }
 
     func revealGameFolder() {
@@ -336,6 +354,71 @@ final class ProxyInstaller: ObservableObject {
         return contents
             .filter { $0.pathExtension.lowercased() == "exe" }
             .sorted { $0.lastPathComponent.localizedCaseInsensitiveCompare($1.lastPathComponent) == .orderedAscending }
+    }
+
+    private func clearFolderSuggestion() {
+        suggestedFolderURL = nil
+        suggestedFolderText = ""
+    }
+
+    private func updateFolderSuggestion(for gameFolderURL: URL) {
+        guard let engineFolderURL = findEngineExecutableFolder(under: gameFolderURL) else {
+            clearFolderSuggestion()
+            return
+        }
+
+        let relativePath = engineFolderURL.path
+            .replacingOccurrences(of: gameFolderURL.path, with: "")
+            .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+
+        suggestedFolderURL = engineFolderURL
+        suggestedFolderText = "This looks like a launcher folder. The game executable is in \(relativePath)."
+    }
+
+    /// Unreal Engine games keep a launcher at the top level and the executable
+    /// that actually loads DirectInput in <Project>/Binaries/Win64. Probe that
+    /// exact layout instead of walking the whole game tree.
+    private func findEngineExecutableFolder(under folderURL: URL) -> URL? {
+        let fileManager = FileManager.default
+        let engineSubpath = "Binaries/Win64"
+
+        var candidates = [folderURL.appendingPathComponent(engineSubpath)]
+
+        if let entries = try? fileManager.contentsOfDirectory(
+            at: folderURL,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles]
+        ) {
+            for entry in entries {
+                let isDirectory = (try? entry.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory ?? false
+
+                if isDirectory {
+                    candidates.append(entry.appendingPathComponent(engineSubpath))
+                }
+            }
+        }
+
+        for candidate in candidates {
+            guard candidate.standardizedFileURL != folderURL.standardizedFileURL else {
+                continue
+            }
+
+            var isDirectory: ObjCBool = false
+
+            guard fileManager.fileExists(atPath: candidate.path, isDirectory: &isDirectory), isDirectory.boolValue else {
+                continue
+            }
+
+            let hasUsableExe = findExeFiles(in: candidate).contains {
+                WindowsExecutable.architecture(of: $0).canLoadProxy
+            }
+
+            if hasUsableExe {
+                return candidate
+            }
+        }
+
+        return nil
     }
 
     private func describe(_ inspectedExeFiles: [(URL, WindowsExecutableArchitecture)]) -> String {

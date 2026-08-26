@@ -66,6 +66,19 @@ struct SetupView: View {
 
                 Label(proxyInstaller.exeText, systemImage: proxyInstaller.exeStatusIcon)
                     .foregroundStyle(proxyInstaller.exeStatusColor)
+
+                if !proxyInstaller.suggestedFolderText.isEmpty {
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        Label(proxyInstaller.suggestedFolderText, systemImage: "arrow.turn.down.right")
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+
+                        Button("Use That Folder") {
+                            proxyInstaller.useSuggestedFolder()
+                        }
+                        .controlSize(.small)
+                    }
+                }
             }
 
             VStack(alignment: .leading, spacing: 8) {
