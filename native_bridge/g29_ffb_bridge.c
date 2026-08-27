@@ -14,6 +14,7 @@
 
 #include <CoreFoundation/CoreFoundation.h>
 #include <IOKit/hid/IOHIDManager.h>
+#include <IOKit/IOKitLib.h>
 
 #define LOGITECH_VID 0x046D
 #define G29_PID      0xC24F
@@ -180,24 +181,56 @@ static void report_wheel_lost(const char *reason)
     handle_signal(SIGTERM);
 }
 
+// Interroga il registry IOKit invece dell'elenco dell'IOHIDManager: quello
+// resta fermo alla fotografia iniziale finche' non gira un run loop, quindi
+// non si accorgeva dello scollegamento. Nel dubbio dichiara il volante
+// presente, cosi' un errore momentaneo della query non spegne un bridge sano.
 static int wheel_still_present(void)
 {
-    if (!g_hid_manager)
+    CFMutableDictionaryRef match = IOServiceMatching("IOHIDDevice");
+
+    if (!match)
     {
-        return 0;
+        return 1;
     }
 
-    CFSetRef devices = IOHIDManagerCopyDevices(g_hid_manager);
+    int vendor_id = LOGITECH_VID;
+    int product_id = G29_PID;
 
-    if (!devices)
+    CFNumberRef vendor = CFNumberCreate(kCFAllocatorDefault, kCFNumberIntType, &vendor_id);
+    CFNumberRef product = CFNumberCreate(kCFAllocatorDefault, kCFNumberIntType, &product_id);
+
+    if (vendor)
     {
-        return 0;
+        CFDictionarySetValue(match, CFSTR("VendorID"), vendor);
+        CFRelease(vendor);
     }
 
-    CFIndex count = CFSetGetCount(devices);
-    CFRelease(devices);
+    if (product)
+    {
+        CFDictionarySetValue(match, CFSTR("ProductID"), product);
+        CFRelease(product);
+    }
 
-    return count > 0;
+    io_iterator_t iterator = IO_OBJECT_NULL;
+
+    if (IOServiceGetMatchingServices(kIOMainPortDefault, match, &iterator) != KERN_SUCCESS)
+    {
+        return 1;
+    }
+
+    int found = 0;
+    io_object_t device;
+
+    while ((device = IOIteratorNext(iterator)))
+    {
+        found = 1;
+        IOObjectRelease(device);
+    }
+
+    IOObjectRelease(iterator);
+
+    return found;
 }
 
 static void check_wheel_watchdog(void)
