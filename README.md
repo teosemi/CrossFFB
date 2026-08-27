@@ -1,5 +1,7 @@
 # CrossFFB
 
+[![Build](https://github.com/teosemi/CrossFFB/actions/workflows/build.yml/badge.svg)](https://github.com/teosemi/CrossFFB/actions/workflows/build.yml)
+
 CrossFFB is a macOS menu bar app that enables Logitech G29 Force Feedback for supported 64-bit Windows games running through CrossOver/Wine.
 
 It uses a local `dinput8.dll` proxy installed next to the game executable and a native macOS bridge that sends Force Feedback commands to the wheel.
