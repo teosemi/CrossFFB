@@ -40,6 +40,20 @@
 // Evita spam di STOP F3 quando ETS2 invia molti STOP consecutivi.
 #define STOP_THROTTLE_SECONDS 0.100
 
+// Damper: ACC crea un GUID_Damper accanto alla constant force e ne aggiorna i
+// coefficienti durante la guida. ETS2 non lo usa.
+//
+// Il byte 0 dei comandi Logitech e' (slot_mask << 4) | comando. La constant
+// force usa lo slot 1 (0x11 = slot 1, download and play), quindi il damper va
+// su uno slot diverso per non sovrascriverla.
+#define DAMPER_PLAY_COMMAND 0x21   // slot 2, download and play
+#define DAMPER_STOP_COMMAND 0x23   // slot 2, stop force
+#define DAMPER_FORCE_TYPE   0x02   // damper
+#define DAMPER_MAX_K        7      // i coefficienti Logitech vanno da 0 a 7
+
+#define DEFAULT_DAMPER_ENABLED 1
+#define DEFAULT_DAMPER_GAIN 1.00
+
 static volatile sig_atomic_t g_running = 1;
 
 static IOHIDManagerRef g_hid_manager = NULL;
@@ -58,6 +72,11 @@ static int g_message_count = 0;
 
 static double g_force_gain = DEFAULT_FORCE_GAIN;
 static int g_invert_force = DEFAULT_INVERT_FORCE;
+static int g_damper_enabled = DEFAULT_DAMPER_ENABLED;
+static double g_damper_gain = DEFAULT_DAMPER_GAIN;
+static int g_last_damper_k1 = -1;
+static int g_last_damper_k2 = -1;
+static int g_hid_damper_count = 0;
 static int g_wheel_range_degrees = DEFAULT_WHEEL_RANGE_DEGREES;
 static int g_listen_port = DEFAULT_LISTEN_PORT;
 static int g_control_port = DEFAULT_CONTROL_PORT;
@@ -318,6 +337,8 @@ static void wheel_stop_all(const char *reason, int verbose, int force_send)
     }
 
     g_last_force_byte = -1;
+    g_last_damper_k1 = -1;
+    g_last_damper_k2 = -1;
 }
 
 static void wheel_spring_off(int verbose)
@@ -416,6 +437,95 @@ static void make_app_constant_command(uint8_t out[7], int forceByte)
     out[4] = 0x80;
     out[5] = 0x80;
     out[6] = 0x00;
+}
+
+static int coefficient_to_damper_k(long coefficient)
+{
+    double magnitude = (double)coefficient;
+
+    if (magnitude < 0.0)
+    {
+        magnitude = -magnitude;
+    }
+
+    double normalized = (magnitude / DI_FORCE_MAX) * g_damper_gain;
+
+    if (normalized > 1.0)
+    {
+        normalized = 1.0;
+    }
+
+    return clamp_int((int)(normalized * DAMPER_MAX_K + 0.5), 0, DAMPER_MAX_K);
+}
+
+// Damper: 21 02 K1 S1 K2 S2 00, con K da 0 a 7 e S bit di segno.
+// Con entrambi i coefficienti a zero conviene liberare lo slot invece di
+// tenere in esecuzione un effetto di intensita' nulla.
+static void make_damper_command(uint8_t out[7], int k1, int s1, int k2, int s2)
+{
+    memset(out, 0, 7);
+
+    if (k1 == 0 && k2 == 0)
+    {
+        out[0] = DAMPER_STOP_COMMAND;
+        return;
+    }
+
+    out[0] = DAMPER_PLAY_COMMAND;
+    out[1] = DAMPER_FORCE_TYPE;
+    out[2] = (uint8_t)k1;
+    out[3] = (uint8_t)s1;
+    out[4] = (uint8_t)k2;
+    out[5] = (uint8_t)s2;
+    out[6] = 0x00;
+}
+
+// Traduce un effetto condition DirectInput nel comando damper del G29.
+// I coefficienti DirectInput vanno da -10000 a 10000, quelli Logitech da 0 a 7
+// con un bit di segno separato per ciascuna direzione.
+static void wheel_send_damper(long positive_coefficient, long negative_coefficient)
+{
+    if (!g_damper_enabled)
+    {
+        return;
+    }
+
+    int k1 = coefficient_to_damper_k(positive_coefficient);
+    int k2 = coefficient_to_damper_k(negative_coefficient);
+
+    if (k1 == g_last_damper_k1 && k2 == g_last_damper_k2)
+    {
+        return;
+    }
+
+    uint8_t cmd[7];
+    make_damper_command(
+        cmd,
+        k1,
+        positive_coefficient < 0 ? 1 : 0,
+        k2,
+        negative_coefficient < 0 ? 1 : 0
+    );
+
+    const char *label = (cmd[0] == DAMPER_STOP_COMMAND) ? "damper stop 23" : "damper 21";
+
+    IOReturn rc = send_command7(cmd, label, 0);
+
+    if (rc == kIOReturnSuccess)
+    {
+        g_hid_damper_count++;
+        g_last_damper_k1 = k1;
+        g_last_damper_k2 = k2;
+
+        log_line(
+            "HID damper k1=%d k2=%d from coefficients %ld/%ld gain=%.2f",
+            k1,
+            k2,
+            positive_coefficient,
+            negative_coefficient,
+            g_damper_gain
+        );
+    }
 }
 
 static void wheel_send_constant_from_magnitude(int magnitude)
@@ -579,6 +689,37 @@ static int create_server_socket_on_port(int port, const char *name)
     return fd;
 }
 
+static long field_long(const char *line, const char *key, long fallback)
+{
+    const char *found = strstr(line, key);
+
+    if (!found)
+    {
+        return fallback;
+    }
+
+    return atol(found + strlen(key));
+}
+
+// SET_CONDITION name=GUID_Damper offset=0 positiveCoefficient=8000
+// negativeCoefficient=8000 positiveSaturation=10000 negativeSaturation=10000
+// deadBand=0
+static void handle_set_condition(const char *line)
+{
+    const char *name = strstr(line, "name=");
+
+    if (!name || strncmp(name + 5, "GUID_Damper", 11) != 0)
+    {
+        log_line("RX condition ignored (not a damper): %s", line);
+        return;
+    }
+
+    long positive_coefficient = field_long(line, "positiveCoefficient=", 0);
+    long negative_coefficient = field_long(line, "negativeCoefficient=", 0);
+
+    wheel_send_damper(positive_coefficient, negative_coefficient);
+}
+
 static void handle_line(const char *line)
 {
     g_message_count++;
@@ -587,6 +728,12 @@ static void handle_line(const char *line)
     {
         int magnitude = atoi(line + 23);
         wheel_send_constant_from_magnitude(magnitude);
+        return;
+    }
+
+    if (strncmp(line, "SET_CONDITION ", 14) == 0)
+    {
+        handle_set_condition(line);
         return;
     }
 
@@ -693,6 +840,50 @@ static void handle_control_line(int client_fd, const char *line)
         return;
     }
 
+    if (strncmp(line, "SET_DAMPER ", 11) == 0)
+    {
+        int enabled = atoi(line + 11) ? 1 : 0;
+
+        if (!enabled && g_damper_enabled)
+        {
+            const uint8_t stopDamper[7] = {DAMPER_STOP_COMMAND, 0, 0, 0, 0, 0, 0};
+            send_command7(stopDamper, "control damper off 23", 1);
+        }
+
+        g_damper_enabled = enabled;
+        g_last_damper_k1 = -1;
+        g_last_damper_k2 = -1;
+
+        char reply[64];
+        snprintf(reply, sizeof(reply), "OK SET_DAMPER %d", g_damper_enabled);
+        send_control_reply(client_fd, reply);
+
+        log_line("CONTROL SET_DAMPER %d", g_damper_enabled);
+        return;
+    }
+
+    if (strncmp(line, "SET_DAMPER_GAIN ", 16) == 0)
+    {
+        double new_gain = atof(line + 16);
+
+        if (new_gain < 0.0 || new_gain > 1.0)
+        {
+            send_control_reply(client_fd, "ERR RANGE");
+            return;
+        }
+
+        g_damper_gain = new_gain;
+        g_last_damper_k1 = -1;
+        g_last_damper_k2 = -1;
+
+        char reply[64];
+        snprintf(reply, sizeof(reply), "OK SET_DAMPER_GAIN %.2f", g_damper_gain);
+        send_control_reply(client_fd, reply);
+
+        log_line("CONTROL SET_DAMPER_GAIN %.2f", g_damper_gain);
+        return;
+    }
+
     if (strcmp(line, "RESET_WHEEL") == 0)
     {
         log_line("CONTROL RESET_WHEEL");
@@ -719,10 +910,13 @@ static void handle_control_line(int client_fd, const char *line)
         snprintf(
             reply,
             sizeof(reply),
-            "OK STATUS gain=%.2f range=%d invert=%d force_count=%d stop_count=%d skipped_stop=%d messages=%d",
+            "OK STATUS gain=%.2f range=%d invert=%d damper=%d damper_gain=%.2f damper_count=%d force_count=%d stop_count=%d skipped_stop=%d messages=%d",
             g_force_gain,
             g_wheel_range_degrees,
             g_invert_force,
+            g_damper_enabled,
+            g_damper_gain,
+            g_hid_damper_count,
             g_hid_force_count,
             g_hid_stop_count,
             g_hid_stop_skipped_count,
@@ -948,6 +1142,8 @@ static void print_usage(const char *program_name)
     printf("  --gain <value>      Force gain, default %.2f, example 1.00\n", DEFAULT_FORCE_GAIN);
     printf("  --range <degrees>   Steering range 40..900, default %d\n", DEFAULT_WHEEL_RANGE_DEGREES);
     printf("  --invert <0|1>      Invert force direction, default %d\n", DEFAULT_INVERT_FORCE);
+    printf("  --damper <0|1>      Apply condition damper effects, default %d\n", DEFAULT_DAMPER_ENABLED);
+    printf("  --damper-gain <v>   Damper strength 0..1, default %.2f\n", DEFAULT_DAMPER_GAIN);
     printf("  --port <port>       Game TCP listen port, default %d\n", DEFAULT_LISTEN_PORT);
     printf("  --control-port <p>  App control TCP port, default %d\n", DEFAULT_CONTROL_PORT);
     printf("  --help              Show this help\n");
@@ -1021,6 +1217,31 @@ static int parse_args(int argc, char **argv)
             if (i + 1 >= argc || !parse_int_arg(argv[i + 1], &g_invert_force))
             {
                 fprintf(stderr, "Invalid --invert value\n");
+                return -1;
+            }
+
+            i++;
+            continue;
+        }
+
+        if (strcmp(argv[i], "--damper") == 0)
+        {
+            if (i + 1 >= argc || !parse_int_arg(argv[i + 1], &g_damper_enabled))
+            {
+                fprintf(stderr, "Invalid --damper value\n");
+                return -1;
+            }
+
+            g_damper_enabled = g_damper_enabled ? 1 : 0;
+            i++;
+            continue;
+        }
+
+        if (strcmp(argv[i], "--damper-gain") == 0)
+        {
+            if (i + 1 >= argc || !parse_double_arg(argv[i + 1], &g_damper_gain))
+            {
+                fprintf(stderr, "Invalid --damper-gain value\n");
                 return -1;
             }
 
@@ -1115,9 +1336,11 @@ int main(int argc, char **argv)
     g_parent_pid = getppid();
 
     log_line("g29_ffb_bridge Step26 parent watchdog starting");
-    log_line("gain=%.2f invert=%d range=%d port=%d control_port=%d parent_pid=%d STOP_THROTTLE_SECONDS=%.3f",
+    log_line("gain=%.2f invert=%d damper=%d damper_gain=%.2f range=%d port=%d control_port=%d parent_pid=%d STOP_THROTTLE_SECONDS=%.3f",
              g_force_gain,
              g_invert_force,
+             g_damper_enabled,
+             g_damper_gain,
              g_wheel_range_degrees,
              g_listen_port,
              g_control_port,
