@@ -289,6 +289,7 @@ final class ProxyInstaller: ObservableObject {
                 }
 
                 try fileManager.moveItem(at: backupURL, to: targetProxyURL)
+                removeVerboseLogMarker(in: gameFolderURL)
                 lastActionText = "Proxy removed. Previous dinput8.dll restored."
                 recordHistory(action: "Removed and restored backup", folderURL: gameFolderURL)
                 refreshStatus()
@@ -309,6 +310,7 @@ final class ProxyInstaller: ObservableObject {
 
             if filesHaveSameSHA256(targetProxyURL, bundledProxyURL) {
                 try fileManager.removeItem(at: targetProxyURL)
+                removeVerboseLogMarker(in: gameFolderURL)
                 lastActionText = "Proxy removed."
                 recordHistory(action: "Removed", folderURL: gameFolderURL)
             } else {
@@ -396,6 +398,18 @@ final class ProxyInstaller: ObservableObject {
         return contents
             .filter { $0.pathExtension.lowercased() == "exe" }
             .sorted { $0.lastPathComponent.localizedCaseInsensitiveCompare($1.lastPathComponent) == .orderedAscending }
+    }
+
+    /// Removing the proxy should leave the folder as CrossFFB found it, and a
+    /// leftover marker would silently switch tracing back on at the next install.
+    private func removeVerboseLogMarker(in gameFolderURL: URL) {
+        let markerURL = gameFolderURL.appendingPathComponent(verboseLogMarkerName)
+
+        guard FileManager.default.fileExists(atPath: markerURL.path) else {
+            return
+        }
+
+        try? FileManager.default.removeItem(at: markerURL)
     }
 
     private func updateVerboseLogState(gameFolderURL: URL) {
