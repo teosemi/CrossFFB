@@ -6,15 +6,34 @@
 import SwiftUI
 
 /// The half circle the steering range is drawn on.
+private enum ArcGeometry {
+    static func radius(in size: CGSize) -> CGFloat {
+        max(min(size.width / 2, size.height) - 6, 1)
+    }
+
+    static func centre(in size: CGSize) -> CGPoint {
+        CGPoint(x: size.width / 2, y: size.height - 6)
+    }
+
+    /// Where the knob sits for a given fraction of the arc.
+    static func point(for fraction: Double, in size: CGSize) -> CGPoint {
+        let angle = CGFloat.pi * (1 - min(max(fraction, 0), 1))
+        let centre = centre(in: size)
+        let radius = radius(in: size)
+
+        return CGPoint(
+            x: centre.x + radius * cos(angle),
+            y: centre.y - radius * sin(angle)
+        )
+    }
+}
+
 private struct ArcShape: Shape {
     func path(in rect: CGRect) -> Path {
-        let radius = min(rect.width / 2, rect.height) - 6
-        let centre = CGPoint(x: rect.midX, y: rect.maxY - 6)
-
         var path = Path()
         path.addArc(
-            center: centre,
-            radius: max(radius, 1),
+            center: ArcGeometry.centre(in: rect.size),
+            radius: ArcGeometry.radius(in: rect.size),
             startAngle: .degrees(180),
             endAngle: .degrees(360),
             clockwise: false
@@ -112,6 +131,16 @@ struct ArcGauge<Centre: View>: View {
                     .trim(from: 0, to: fraction)
                     .stroke(theme.accent, style: StrokeStyle(lineWidth: 9, lineCap: .round))
 
+                Circle()
+                    .fill(Color.white)
+                    .overlay(
+                        Circle()
+                            .stroke(theme.accent, lineWidth: 2)
+                    )
+                    .frame(width: 14, height: 14)
+                    .shadow(color: .black.opacity(0.3), radius: 2, y: 1)
+                    .position(ArcGeometry.point(for: fraction, in: geometry.size))
+
                 centre()
                     .offset(y: 18)
             }
@@ -132,10 +161,9 @@ struct ArcGauge<Centre: View>: View {
     /// The arc is grabbable along its band only, so a double click on the number
     /// in the middle still reaches the number.
     private func scrub(_ drag: DragGesture.Value, in size: CGSize) {
-        let radius = min(size.width / 2, size.height) - 6
-        guard radius > 0 else { return }
+        let radius = ArcGeometry.radius(in: size)
+        let centrePoint = ArcGeometry.centre(in: size)
 
-        let centrePoint = CGPoint(x: size.width / 2, y: size.height - 6)
         let start = CGPoint(
             x: drag.startLocation.x - centrePoint.x,
             y: drag.startLocation.y - centrePoint.y
@@ -148,10 +176,18 @@ struct ArcGauge<Centre: View>: View {
             y: drag.location.y - centrePoint.y
         )
 
-        // Angle with y pointing up: pi at the left end of the arc, 0 at the right.
-        let angle = atan2(-current.y, current.x)
-        let clamped = min(max(angle, 0), .pi)
-        let ratio = 1 - clamped / .pi
+        let ratio: Double
+
+        if current.y > 0 {
+            // Dragged below the ends of the arc. Which end it left through
+            // decides where it stops: clamping the angle alone sent the left end
+            // to the maximum, so the range snapped from 40 back to 900.
+            ratio = current.x < 0 ? 0 : 1
+        } else {
+            // Angle with y pointing up: pi at the left end, 0 at the right.
+            let angle = atan2(-current.y, current.x)
+            ratio = 1 - min(max(angle, 0), .pi) / .pi
+        }
 
         onScrub?(bounds.lowerBound + ratio * (bounds.upperBound - bounds.lowerBound))
     }
