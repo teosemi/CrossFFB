@@ -22,19 +22,19 @@ typedef HRESULT (WINAPI *DirectInput8Create_t)(
 
 static DirectInput8Create_t g_realDirectInput8Create = NULL;
 
-static void log_write(const char* fmt, va_list args)
+// Builds the path of a file sitting next to the running game executable.
+static void build_sibling_path(const char* fileName, char* out)
 {
     char exePath[MAX_PATH] = {0};
-    char logPath[MAX_PATH] = {0};
 
     DWORD len = GetModuleFileNameA(NULL, exePath, MAX_PATH);
 
     if (len > 0)
     {
-        lstrcpyA(logPath, exePath);
+        lstrcpyA(out, exePath);
 
         char* lastSlash = NULL;
-        for (char* p = logPath; *p; ++p)
+        for (char* p = out; *p; ++p)
         {
             if (*p == '\\' || *p == '/')
             {
@@ -45,17 +45,19 @@ static void log_write(const char* fmt, va_list args)
         if (lastSlash)
         {
             *(lastSlash + 1) = '\0';
-            lstrcatA(logPath, "dinput8_proxy.log");
-        }
-        else
-        {
-            lstrcpyA(logPath, "dinput8_proxy.log");
+            lstrcatA(out, fileName);
+            return;
         }
     }
-    else
-    {
-        lstrcpyA(logPath, "dinput8_proxy.log");
-    }
+
+    lstrcpyA(out, fileName);
+}
+
+static void log_write(const char* fmt, va_list args)
+{
+    char logPath[MAX_PATH] = {0};
+
+    build_sibling_path("dinput8_proxy.log", logPath);
 
     FILE* f = fopen(logPath, "ab");
     if (!f)
@@ -91,10 +93,14 @@ static void log_line(const char* fmt, ...)
     va_end(args);
 }
 
+#define VERBOSE_LOG_MARKER_NAME "crossffb_verbose_log.enabled"
+
 // Per-call tracing used to be written unconditionally, one fopen/fclose per
 // line, from the thread delivering force feedback. A single session left
-// gigabytes behind, so it is now opt-in: set CROSSFFB_PROXY_LOG=1 in the
-// bottle environment to get it back for diagnostics.
+// gigabytes behind, so it is now opt-in, through either CROSSFFB_PROXY_LOG=1
+// in the bottle environment or a marker file next to the game executable,
+// which is what the CrossFFB Setup toggle writes. The choice is read once and
+// cached, so it applies from the next time the game starts.
 static bool verbose_logging_enabled(void)
 {
     static int enabled = -1;
@@ -105,6 +111,18 @@ static bool verbose_logging_enabled(void)
         DWORD len = GetEnvironmentVariableA("CROSSFFB_PROXY_LOG", value, sizeof(value));
 
         enabled = (len > 0 && len < sizeof(value) && value[0] != '0') ? 1 : 0;
+
+        if (enabled == 0)
+        {
+            char markerPath[MAX_PATH] = {0};
+
+            build_sibling_path(VERBOSE_LOG_MARKER_NAME, markerPath);
+
+            if (GetFileAttributesA(markerPath) != INVALID_FILE_ATTRIBUTES)
+            {
+                enabled = 1;
+            }
+        }
     }
 
     return enabled == 1;

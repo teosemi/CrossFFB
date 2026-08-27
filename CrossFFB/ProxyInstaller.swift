@@ -31,6 +31,9 @@ final class ProxyInstaller: ObservableObject {
     @Published var suggestedFolderURL: URL?
     @Published var suggestedFolderText: String = ""
 
+    @Published var isVerboseLogEnabled: Bool = false
+    @Published var verboseLogDetailText: String = ""
+
     @Published var proxyStatusText: String = "Proxy status unknown"
     @Published var proxyStatusIcon: String = "questionmark.circle"
     @Published var proxyStatusColor: Color = .secondary
@@ -40,6 +43,8 @@ final class ProxyInstaller: ObservableObject {
 
     private let proxyFileName = "dinput8.dll"
     private let backupFileName = "dinput8.dll.crossffb_backup"
+    private let verboseLogMarkerName = "crossffb_verbose_log.enabled"
+    private let proxyLogName = "dinput8_proxy.log"
 
     private var bundledProxyURL: URL? {
         Bundle.main.url(forResource: "dinput8", withExtension: "dll")
@@ -107,6 +112,8 @@ final class ProxyInstaller: ObservableObject {
             exeStatusIcon = "questionmark.circle"
             exeStatusColor = .secondary
             clearFolderSuggestion()
+            isVerboseLogEnabled = false
+            verboseLogDetailText = ""
 
             proxyStatusText = "Proxy status unknown"
             proxyStatusIcon = "questionmark.circle"
@@ -123,6 +130,8 @@ final class ProxyInstaller: ObservableObject {
             exeStatusIcon = "xmark.circle"
             exeStatusColor = .red
             clearFolderSuggestion()
+            isVerboseLogEnabled = false
+            verboseLogDetailText = ""
 
             proxyStatusText = "Proxy status unknown"
             proxyStatusIcon = "questionmark.circle"
@@ -154,6 +163,7 @@ final class ProxyInstaller: ObservableObject {
         }
 
         updateFolderSuggestion(for: gameFolderURL)
+        updateVerboseLogState(gameFolderURL: gameFolderURL)
 
         updateProxyStatus(gameFolderURL: gameFolderURL)
     }
@@ -166,6 +176,38 @@ final class ProxyInstaller: ObservableObject {
         gameFolderURL = suggestedFolderURL
         UserDefaults.standard.set(suggestedFolderURL.path, forKey: DefaultsKey.gameFolderPath)
         lastActionText = "Selected game folder."
+        refreshStatus()
+    }
+
+    /// The proxy runs inside the bottle, where CrossFFB cannot set environment
+    /// variables, so detailed logging is switched with a marker file that the
+    /// proxy looks for next to the game executable.
+    func setVerboseLog(_ enabled: Bool) {
+        guard let gameFolderURL else {
+            return
+        }
+
+        let markerURL = gameFolderURL.appendingPathComponent(verboseLogMarkerName)
+        let fileManager = FileManager.default
+
+        do {
+            if enabled {
+                if !fileManager.fileExists(atPath: markerURL.path) {
+                    try Data().write(to: markerURL)
+                }
+
+                lastActionText = "Detailed proxy log enabled. Restart the game to apply."
+            } else {
+                if fileManager.fileExists(atPath: markerURL.path) {
+                    try fileManager.removeItem(at: markerURL)
+                }
+
+                lastActionText = "Detailed proxy log disabled. Restart the game to apply."
+            }
+        } catch {
+            lastActionText = "Could not change the proxy log setting: \(error.localizedDescription)"
+        }
+
         refreshStatus()
     }
 
@@ -356,6 +398,23 @@ final class ProxyInstaller: ObservableObject {
             .sorted { $0.lastPathComponent.localizedCaseInsensitiveCompare($1.lastPathComponent) == .orderedAscending }
     }
 
+    private func updateVerboseLogState(gameFolderURL: URL) {
+        let fileManager = FileManager.default
+        let markerURL = gameFolderURL.appendingPathComponent(verboseLogMarkerName)
+
+        isVerboseLogEnabled = fileManager.fileExists(atPath: markerURL.path)
+
+        let logURL = gameFolderURL.appendingPathComponent(proxyLogName)
+        let logSize = (try? logURL.resourceValues(forKeys: [.fileSizeKey]))?.fileSize
+
+        if let logSize {
+            let formatted = ByteCountFormatter.string(fromByteCount: Int64(logSize), countStyle: .file)
+            verboseLogDetailText = "\(proxyLogName) is \(formatted)."
+        } else {
+            verboseLogDetailText = "No \(proxyLogName) yet."
+        }
+    }
+
     private func clearFolderSuggestion() {
         suggestedFolderURL = nil
         suggestedFolderText = ""
@@ -364,6 +423,8 @@ final class ProxyInstaller: ObservableObject {
     private func updateFolderSuggestion(for gameFolderURL: URL) {
         guard let engineFolderURL = findEngineExecutableFolder(under: gameFolderURL) else {
             clearFolderSuggestion()
+            isVerboseLogEnabled = false
+            verboseLogDetailText = ""
             return
         }
 

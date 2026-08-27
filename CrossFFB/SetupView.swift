@@ -93,6 +93,21 @@ struct SetupView: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
+
+                Divider()
+
+                Toggle("Detailed proxy log", isOn: Binding(
+                    get: { proxyInstaller.isVerboseLogEnabled },
+                    set: { proxyInstaller.setVerboseLog($0) }
+                ))
+                .disabled(proxyInstaller.gameFolderURL == nil)
+
+                Text(proxyInstaller.isVerboseLogEnabled
+                     ? "Logs every force feedback event, which grows by tens of megabytes per session. Takes effect when the game restarts. \(proxyInstaller.verboseLogDetailText)"
+                     : "Only startup and errors are logged. Turn this on to diagnose a problem, then turn it back off. \(proxyInstaller.verboseLogDetailText)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
 
             VStack(alignment: .leading, spacing: 8) {

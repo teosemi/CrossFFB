@@ -253,13 +253,19 @@ covering startup, the DirectInput handshake and connection errors.
 
 Detailed per-event tracing is off by default, because it used to write one
 line per force update and grew to gigabytes. To turn it back on for
-diagnostics, set this variable in the CrossOver/Wine bottle environment:
+diagnostics, use **Detailed proxy log** in CrossFFB Setup, which writes a
+`crossffb_verbose_log.enabled` marker next to the game executable.
+
+The same tracing can be enabled without the app by setting this variable in
+the CrossOver/Wine bottle environment:
 
 ```text
 CROSSFFB_PROXY_LOG=1
 ```
 
-Expect the log to grow by tens of megabytes per session while it is enabled.
+Either way the setting is read when the game starts, so restart the game to
+apply it, and expect the log to grow by tens of megabytes per session while
+it is enabled.
 
 ---
 
