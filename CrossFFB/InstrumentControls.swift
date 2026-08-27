@@ -23,11 +23,78 @@ private struct ArcShape: Shape {
     }
 }
 
+
+/// Any value in the panel can be typed: double click the number and it becomes
+/// a field. Enter commits, Escape or losing focus cancels.
+struct EditableValue: View {
+    let display: String
+    let editSeed: String
+    let font: Font
+    let foreground: Color
+    let accent: Color
+    let fieldWidth: CGFloat
+    let onCommit: (Double) -> Void
+
+    @State private var isEditing = false
+    @State private var draft = ""
+    @FocusState private var isFocused: Bool
+
+    var body: some View {
+        if isEditing {
+            TextField("", text: $draft)
+                .textFieldStyle(.plain)
+                .font(font)
+                .foregroundStyle(foreground)
+                .multilineTextAlignment(.center)
+                .focused($isFocused)
+                .frame(width: fieldWidth)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 1)
+                .background(
+                    RoundedRectangle(cornerRadius: 5)
+                        .stroke(accent, lineWidth: 1)
+                )
+                .onSubmit(commit)
+                .onExitCommand { isEditing = false }
+                .onChange(of: isFocused) { _, focused in
+                    if !focused {
+                        isEditing = false
+                    }
+                }
+        } else {
+            Text(display)
+                .font(font)
+                .foregroundStyle(foreground)
+                .contentShape(Rectangle())
+                .onTapGesture(count: 2) {
+                    draft = editSeed
+                    isEditing = true
+                    isFocused = true
+                }
+                .help("Double click to type a value")
+        }
+    }
+
+    private func commit() {
+        let cleaned = draft
+            .replacingOccurrences(of: ",", with: ".")
+            .trimmingCharacters(in: .whitespaces)
+
+        if let value = Double(cleaned) {
+            onCommit(value)
+        }
+
+        isEditing = false
+    }
+}
+
 /// Steering range as an arc with the value in its mouth.
-struct ArcGauge: View {
+struct ArcGauge<Centre: View>: View {
     let value: Double
     let bounds: ClosedRange<Double>
     let theme: PanelTheme
+    var onScrub: ((Double) -> Void)?
+    @ViewBuilder var centre: () -> Centre
 
     private var fraction: Double {
         let span = bounds.upperBound - bounds.lowerBound
@@ -36,30 +103,57 @@ struct ArcGauge: View {
     }
 
     var body: some View {
-        ZStack {
-            ArcShape()
-                .stroke(theme.track, style: StrokeStyle(lineWidth: 9, lineCap: .round))
+        GeometryReader { geometry in
+            ZStack {
+                ArcShape()
+                    .stroke(theme.track, style: StrokeStyle(lineWidth: 9, lineCap: .round))
 
-            ArcShape()
-                .trim(from: 0, to: fraction)
-                .stroke(theme.accent, style: StrokeStyle(lineWidth: 9, lineCap: .round))
+                ArcShape()
+                    .trim(from: 0, to: fraction)
+                    .stroke(theme.accent, style: StrokeStyle(lineWidth: 9, lineCap: .round))
 
-            VStack(spacing: 0) {
-                Text("\(Int(value.rounded()))")
-                    .font(.condensed(46))
-                    .foregroundStyle(theme.numeral)
-
-                Text("DEGREES")
-                    .font(.condensed(11, weight: .medium))
-                    .tracking(3)
-                    .foregroundStyle(theme.dim)
+                centre()
+                    .offset(y: 18)
             }
-            .offset(y: 18)
+            .contentShape(Rectangle())
+            .gesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { drag in
+                        scrub(drag, in: geometry.size)
+                    }
+            )
         }
         .frame(height: 96)
-        .accessibilityElement()
+        .accessibilityElement(children: .contain)
         .accessibilityLabel("Steering range")
         .accessibilityValue("\(Int(value.rounded())) degrees")
+    }
+
+    /// The arc is grabbable along its band only, so a double click on the number
+    /// in the middle still reaches the number.
+    private func scrub(_ drag: DragGesture.Value, in size: CGSize) {
+        let radius = min(size.width / 2, size.height) - 6
+        guard radius > 0 else { return }
+
+        let centrePoint = CGPoint(x: size.width / 2, y: size.height - 6)
+        let start = CGPoint(
+            x: drag.startLocation.x - centrePoint.x,
+            y: drag.startLocation.y - centrePoint.y
+        )
+
+        guard hypot(start.x, start.y) > radius * 0.55 else { return }
+
+        let current = CGPoint(
+            x: drag.location.x - centrePoint.x,
+            y: drag.location.y - centrePoint.y
+        )
+
+        // Angle with y pointing up: pi at the left end of the arc, 0 at the right.
+        let angle = atan2(-current.y, current.x)
+        let clamped = min(max(angle, 0), .pi)
+        let ratio = 1 - clamped / .pi
+
+        onScrub?(bounds.lowerBound + ratio * (bounds.upperBound - bounds.lowerBound))
     }
 }
 
@@ -106,13 +200,13 @@ struct StepScale: View {
 
 /// A tile you can drag anywhere on, filled to its value. Wide enough to grab
 /// without aiming, which is the point of it.
-struct ThickSlider: View {
+struct ThickSlider<Value: View>: View {
     let title: String
-    let value: String
     let fraction: Double
     let systemImage: String
     let theme: PanelTheme
     var onScrub: ((Double) -> Void)?
+    @ViewBuilder var value: () -> Value
 
     var body: some View {
         GeometryReader { geometry in
@@ -140,9 +234,7 @@ struct ThickSlider: View {
 
                     Spacer()
 
-                    Text(value)
-                        .font(.condensed(24))
-                        .foregroundStyle(theme.numeral)
+                    value()
                 }
                 .padding(.horizontal, 14)
             }
@@ -152,56 +244,51 @@ struct ThickSlider: View {
                 DragGesture(minimumDistance: 0)
                     .onChanged { drag in
                         guard geometry.size.width > 0 else { return }
+                        guard drag.startLocation.x < geometry.size.width - 74 else { return }
+
                         let ratio = drag.location.x / geometry.size.width
                         onScrub?(min(max(ratio, 0), 1))
                     }
             )
         }
         .frame(height: 52)
-        .accessibilityElement()
+        .accessibilityElement(children: .contain)
         .accessibilityLabel(title)
-        .accessibilityValue(value)
     }
 }
 
-/// The 540 / 720 / 900 / SET row under the arc.
+/// The 540 / 720 / 900 row under the arc. An exact angle is typed on the number
+/// itself, so there is no SET chip.
 struct PresetChips: View {
     let presets: [Int]
     let selected: Int?
     let theme: PanelTheme
     var onSelect: (Int) -> Void
-    var onCustom: () -> Void
 
     var body: some View {
         HStack(spacing: 6) {
             ForEach(presets, id: \.self) { preset in
-                chip(String(preset), isOn: preset == selected) {
+                Button {
                     onSelect(preset)
+                } label: {
+                    Text(String(preset))
+                        .font(.condensed(13, weight: preset == selected ? .semibold : .medium))
+                        .tracking(0.8)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 5)
+                        .foregroundStyle(preset == selected ? Color.white : theme.label)
+                        .background(
+                            RoundedRectangle(cornerRadius: 6)
+                                .fill(preset == selected ? theme.accent : Color.clear)
+                        )
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 6)
+                                .stroke(preset == selected ? theme.accent : theme.track, lineWidth: 1)
+                        )
                 }
+                .buttonStyle(.plain)
             }
-
-            chip("SET", isOn: selected == nil, action: onCustom)
         }
-    }
-
-    private func chip(_ text: String, isOn: Bool, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Text(text)
-                .font(.condensed(13, weight: isOn ? .semibold : .medium))
-                .tracking(0.8)
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 5)
-                .foregroundStyle(isOn ? Color.white : theme.label)
-                .background(
-                    RoundedRectangle(cornerRadius: 6)
-                        .fill(isOn ? theme.accent : Color.clear)
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: 6)
-                        .stroke(isOn ? theme.accent : theme.track, lineWidth: 1)
-                )
-        }
-        .buttonStyle(.plain)
     }
 }
 

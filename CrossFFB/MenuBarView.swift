@@ -10,10 +10,6 @@ struct MenuBarView: View {
     @ObservedObject var bridgeManager: BridgeManager
     @Environment(\.colorScheme) private var colorScheme
 
-    @State private var isEditingRange = false
-    @State private var rangeDraft = ""
-    @FocusState private var isRangeFieldFocused: Bool
-
     private var theme: PanelTheme {
         PanelTheme.forScheme(colorScheme)
     }
@@ -23,7 +19,7 @@ struct MenuBarView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             lampRow
-            ArcGauge(value: bridgeManager.rangeDegrees, bounds: 40...900, theme: theme)
+            rangeGauge
             presetRow
             forceControl
             damperControl
@@ -66,75 +62,39 @@ struct MenuBarView: View {
         }
     }
 
-    @ViewBuilder
-    private var presetRow: some View {
-        if isEditingRange {
-            rangeEditor
-        } else {
-            PresetChips(
-                presets: rangePresets,
-                selected: rangePresets.first { Double($0) == bridgeManager.rangeDegrees.rounded() },
-                theme: theme,
-                onSelect: { bridgeManager.applyRangePreset(Double($0)) },
-                onCustom: {
-                    rangeDraft = String(Int(bridgeManager.rangeDegrees.rounded()))
-                    isEditingRange = true
-                    isRangeFieldFocused = true
-                }
-            )
-        }
-    }
-
-    /// The gauge is a poor way to enter an exact angle, so SET swaps the presets
-    /// for a field. 40 to 900 is the range the bridge accepts.
-    private var rangeEditor: some View {
-        HStack(spacing: 8) {
-            TextField("", text: $rangeDraft)
-                .textFieldStyle(.plain)
-                .font(.condensed(15))
-                .foregroundStyle(theme.numeral)
-                .focused($isRangeFieldFocused)
-                .onSubmit(commitRange)
-                .padding(.vertical, 4)
-                .padding(.horizontal, 8)
-                .background(
-                    RoundedRectangle(cornerRadius: 6)
-                        .stroke(theme.accent, lineWidth: 1)
+    private var rangeGauge: some View {
+        ArcGauge(
+            value: bridgeManager.rangeDegrees,
+            bounds: 40...900,
+            theme: theme,
+            onScrub: { bridgeManager.setRange($0) }
+        ) {
+            VStack(spacing: 0) {
+                EditableValue(
+                    display: "\(Int(bridgeManager.rangeDegrees.rounded()))",
+                    editSeed: "\(Int(bridgeManager.rangeDegrees.rounded()))",
+                    font: .condensed(46),
+                    foreground: theme.numeral,
+                    accent: theme.accent,
+                    fieldWidth: 84,
+                    onCommit: { bridgeManager.setRange(min(max($0, 40), 900)) }
                 )
 
-            Text("DEGREES")
-                .font(.condensed(12, weight: .medium))
-                .tracking(1.2)
-                .foregroundStyle(theme.label)
-
-            Spacer()
-
-            Button(action: commitRange) {
-                Text("DONE")
-                    .font(.condensed(13, weight: .semibold))
-                    .tracking(1.2)
-                    .foregroundStyle(theme.accentText)
+                Text("DEGREES")
+                    .font(.condensed(11, weight: .medium))
+                    .tracking(3)
+                    .foregroundStyle(theme.dim)
             }
-            .buttonStyle(.plain)
-
-            Button {
-                isEditingRange = false
-            } label: {
-                Text("CANCEL")
-                    .font(.condensed(13, weight: .medium))
-                    .tracking(1.2)
-                    .foregroundStyle(theme.label)
-            }
-            .buttonStyle(.plain)
         }
     }
 
-    private func commitRange() {
-        if let typed = Double(rangeDraft.trimmingCharacters(in: .whitespaces)) {
-            bridgeManager.setRange(min(max(typed, 40), 900))
-        }
-
-        isEditingRange = false
+    private var presetRow: some View {
+        PresetChips(
+            presets: rangePresets,
+            selected: rangePresets.first { Double($0) == bridgeManager.rangeDegrees.rounded() },
+            theme: theme,
+            onSelect: { bridgeManager.applyRangePreset(Double($0)) }
+        )
     }
 
     private var forceControl: some View {
@@ -151,9 +111,15 @@ struct MenuBarView: View {
 
                 Spacer()
 
-                Text(String(format: "%.2f", bridgeManager.gain))
-                    .font(.condensed(26))
-                    .foregroundStyle(theme.numeral)
+                EditableValue(
+                    display: String(format: "%.2f", bridgeManager.gain),
+                    editSeed: String(format: "%.2f", bridgeManager.gain),
+                    font: .condensed(26),
+                    foreground: theme.numeral,
+                    accent: theme.accent,
+                    fieldWidth: 62,
+                    onCommit: { bridgeManager.setGain(min(max($0, 0), 1.5)) }
+                )
             }
 
             StepScale(
@@ -168,12 +134,21 @@ struct MenuBarView: View {
     private var damperControl: some View {
         ThickSlider(
             title: "DAMPER",
-            value: String(format: "%.2f", bridgeManager.damperGain),
             fraction: bridgeManager.damperGain,
             systemImage: "drop.fill",
             theme: theme,
             onScrub: { bridgeManager.setDamperGain($0) }
-        )
+        ) {
+            EditableValue(
+                display: String(format: "%.2f", bridgeManager.damperGain),
+                editSeed: String(format: "%.2f", bridgeManager.damperGain),
+                font: .condensed(24),
+                foreground: theme.numeral,
+                accent: theme.accent,
+                fieldWidth: 58,
+                onCommit: { bridgeManager.setDamperGain(min(max($0, 0), 1)) }
+            )
+        }
     }
 
     private var footerRow: some View {
