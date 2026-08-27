@@ -16,6 +16,8 @@ struct MenuBarView: View {
 
     private let rangePresets = [540, 720, 900]
 
+    @State private var editingField: PanelField?
+
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             lampRow
@@ -33,6 +35,10 @@ struct MenuBarView: View {
         .padding(16)
         .frame(width: 300)
         .background(theme.panel)
+        .contentShape(Rectangle())
+        .onTapGesture {
+            editingField = nil
+        }
         .onAppear {
             bridgeManager.startIfNeeded()
 
@@ -71,6 +77,8 @@ struct MenuBarView: View {
         ) {
             VStack(spacing: 0) {
                 EditableValue(
+                    field: .range,
+                    editingField: $editingField,
                     display: "\(Int(bridgeManager.rangeDegrees.rounded()))",
                     editSeed: "\(Int(bridgeManager.rangeDegrees.rounded()))",
                     font: .condensed(46),
@@ -112,6 +120,8 @@ struct MenuBarView: View {
                 Spacer()
 
                 EditableValue(
+                    field: .force,
+                    editingField: $editingField,
                     display: String(format: "%.2f", bridgeManager.gain),
                     editSeed: String(format: "%.2f", bridgeManager.gain),
                     font: .condensed(26),
@@ -140,6 +150,8 @@ struct MenuBarView: View {
             onScrub: { bridgeManager.setDamperGain($0) }
         ) {
             EditableValue(
+                field: .damper,
+                editingField: $editingField,
                 display: String(format: "%.2f", bridgeManager.damperGain),
                 editSeed: String(format: "%.2f", bridgeManager.damperGain),
                 font: .condensed(24),

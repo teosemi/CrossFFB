@@ -43,9 +43,20 @@ private struct ArcShape: Shape {
 }
 
 
+/// Which number is being typed, if any. Held by the panel so only one field is
+/// ever open and a click anywhere else closes it.
+enum PanelField: Hashable {
+    case range
+    case force
+    case damper
+}
+
 /// Any value in the panel can be typed: double click the number and it becomes
-/// a field. Enter commits, Escape or losing focus cancels.
+/// a field. Enter commits; Escape, clicking elsewhere or losing focus cancels.
 struct EditableValue: View {
+    let field: PanelField
+    @Binding var editingField: PanelField?
+
     let display: String
     let editSeed: String
     let font: Font
@@ -54,9 +65,12 @@ struct EditableValue: View {
     let fieldWidth: CGFloat
     let onCommit: (Double) -> Void
 
-    @State private var isEditing = false
     @State private var draft = ""
     @FocusState private var isFocused: Bool
+
+    private var isEditing: Bool {
+        editingField == field
+    }
 
     var body: some View {
         if isEditing {
@@ -74,11 +88,14 @@ struct EditableValue: View {
                         .stroke(accent, lineWidth: 1)
                 )
                 .onSubmit(commit)
-                .onExitCommand { isEditing = false }
+                .onExitCommand { editingField = nil }
                 .onChange(of: isFocused) { _, focused in
                     if !focused {
-                        isEditing = false
+                        editingField = nil
                     }
+                }
+                .onAppear {
+                    isFocused = true
                 }
         } else {
             Text(display)
@@ -87,8 +104,7 @@ struct EditableValue: View {
                 .contentShape(Rectangle())
                 .onTapGesture(count: 2) {
                     draft = editSeed
-                    isEditing = true
-                    isFocused = true
+                    editingField = field
                 }
                 .help("Double click to type a value")
         }
@@ -103,7 +119,7 @@ struct EditableValue: View {
             onCommit(value)
         }
 
-        isEditing = false
+        editingField = nil
     }
 }
 
