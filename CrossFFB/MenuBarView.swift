@@ -78,6 +78,7 @@ struct MenuBarView: View {
         VStack(alignment: .leading, spacing: 14) {
             gainControl
             rangeControl
+            damperControl
         }
         .padding(10)
         .background(Color(nsColor: .controlBackgroundColor))
@@ -106,6 +107,38 @@ struct MenuBarView: View {
                 step: 0.05
             )
         }
+    }
+
+    private var damperControl: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Toggle(isOn: Binding(
+                    get: { bridgeManager.isDamperEnabled },
+                    set: { bridgeManager.setDamperEnabled($0) }
+                )) {
+                    Label("Damper", systemImage: "drop.fill")
+                        .font(.subheadline)
+                }
+                .toggleStyle(.checkbox)
+
+                Spacer()
+
+                Text(String(format: "%.2f", bridgeManager.damperGain))
+                    .font(.system(.caption, design: .monospaced))
+                    .foregroundStyle(bridgeManager.isDamperEnabled ? .secondary : .tertiary)
+            }
+
+            Slider(
+                value: Binding(
+                    get: { bridgeManager.damperGain },
+                    set: { bridgeManager.setDamperGain($0) }
+                ),
+                in: 0.0...1.0,
+                step: 0.05
+            )
+            .disabled(!bridgeManager.isDamperEnabled)
+        }
+        .help("Damping strength for games that ask for it, such as Assetto Corsa Competizione. Euro Truck Simulator 2 does not use it.")
     }
 
     private var rangeControl: some View {

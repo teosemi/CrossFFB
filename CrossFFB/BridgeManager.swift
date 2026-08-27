@@ -18,6 +18,8 @@ final class BridgeManager: ObservableObject {
         static let gain = "crossffb.gain"
         static let rangeDegrees = "crossffb.rangeDegrees"
         static let isLogVisible = "crossffb.isLogVisible"
+        static let damperGain = "crossffb.damperGain"
+        static let isDamperEnabled = "crossffb.damperEnabled"
     }
 
     @Published var isRunning: Bool = false
@@ -28,14 +30,21 @@ final class BridgeManager: ObservableObject {
     @Published var gain: Double
     @Published var rangeDegrees: Double
 
+    /// Condition damper, used by ACC and ignored by ETS2.
+    @Published var isDamperEnabled: Bool
+    @Published var damperGain: Double
+
     private var process: Process?
     private var outputPipe: Pipe?
 
     private var gainDebounceTask: Task<Void, Never>?
     private var rangeDebounceTask: Task<Void, Never>?
+    private var damperGainDebounceTask: Task<Void, Never>?
 
     private var lastSentGain: Double?
     private var lastSentRangeDegrees: Double?
+    private var lastSentDamperGain: Double?
+    private var lastSentDamperEnabled: Bool?
 
     private let gamePort: Int = 54321
     private let controlPort: UInt16 = 54322
@@ -78,6 +87,19 @@ final class BridgeManager: ObservableObject {
             isLogVisible = defaults.bool(forKey: DefaultsKey.isLogVisible)
         }
 
+        if defaults.object(forKey: DefaultsKey.damperGain) == nil {
+            damperGain = 1.00
+        } else {
+            damperGain = defaults.double(forKey: DefaultsKey.damperGain)
+        }
+
+        if defaults.object(forKey: DefaultsKey.isDamperEnabled) == nil {
+            isDamperEnabled = true
+        } else {
+            isDamperEnabled = defaults.bool(forKey: DefaultsKey.isDamperEnabled)
+        }
+
+        damperGain = Self.clamp(damperGain, min: 0.0, max: 1.0)
         gain = Self.clamp(gain, min: 0.0, max: 1.5)
         rangeDegrees = Self.clamp(rangeDegrees, min: 40, max: 900)
     }
@@ -115,6 +137,8 @@ final class BridgeManager: ObservableObject {
 
         lastSentGain = nil
         lastSentRangeDegrees = nil
+        lastSentDamperGain = nil
+        lastSentDamperEnabled = nil
 
         let process = Process()
         let outputPipe = Pipe()
@@ -125,6 +149,8 @@ final class BridgeManager: ObservableObject {
             "--gain", String(format: "%.2f", gain),
             "--range", String(Int(rangeDegrees.rounded())),
             "--invert", "0",
+            "--damper", isDamperEnabled ? "1" : "0",
+            "--damper-gain", String(format: "%.2f", damperGain),
             "--port", "\(gamePort)",
             "--control-port", "\(controlPort)"
         ]
@@ -169,6 +195,8 @@ final class BridgeManager: ObservableObject {
                 manager.outputPipe = nil
                 manager.isRunning = false
                 manager.lastSentGain = nil
+                manager.lastSentDamperGain = nil
+                manager.lastSentDamperEnabled = nil
                 manager.lastSentRangeDegrees = nil
 
                 if manager.statusText == "Wheel not found" {
@@ -199,6 +227,8 @@ final class BridgeManager: ObservableObject {
             isRunning = false
             lastSentGain = nil
             lastSentRangeDegrees = nil
+            lastSentDamperGain = nil
+            lastSentDamperEnabled = nil
             statusText = "Start failed: \(error.localizedDescription)"
             appendLog("CrossFFB: start failed: \(error.localizedDescription)")
         }
@@ -207,6 +237,7 @@ final class BridgeManager: ObservableObject {
     func stop() {
         gainDebounceTask?.cancel()
         rangeDebounceTask?.cancel()
+        damperGainDebounceTask?.cancel()
 
         guard let process else {
             isRunning = false
@@ -256,6 +287,8 @@ final class BridgeManager: ObservableObject {
         statusText = "Stopped"
         lastSentGain = nil
         lastSentRangeDegrees = nil
+        lastSentDamperGain = nil
+        lastSentDamperEnabled = nil
     }
 
     func setGain(_ newValue: Double) {
@@ -285,6 +318,49 @@ final class BridgeManager: ObservableObject {
             }
 
             await self.sendGainIfNeeded()
+        }
+    }
+
+    func setDamperEnabled(_ newValue: Bool) {
+        isDamperEnabled = newValue
+        UserDefaults.standard.set(newValue, forKey: DefaultsKey.isDamperEnabled)
+
+        guard isRunning else {
+            return
+        }
+
+        Task { [weak self] in
+            await self?.sendDamperEnabledIfNeeded()
+        }
+    }
+
+    func setDamperGain(_ newValue: Double) {
+        let clampedValue = Self.clamp(newValue, min: 0.0, max: 1.0)
+        damperGain = clampedValue
+        UserDefaults.standard.set(clampedValue, forKey: DefaultsKey.damperGain)
+
+        guard isRunning else {
+            return
+        }
+
+        damperGainDebounceTask?.cancel()
+
+        damperGainDebounceTask = Task { [weak self] in
+            do {
+                try await Task.sleep(nanoseconds: 180_000_000)
+            } catch {
+                return
+            }
+
+            guard !Task.isCancelled else {
+                return
+            }
+
+            guard let self else {
+                return
+            }
+
+            await self.sendDamperGainIfNeeded()
         }
     }
 
@@ -332,6 +408,8 @@ final class BridgeManager: ObservableObject {
 
         Task {
             await sendRangeIfNeeded(force: true)
+            await sendDamperEnabledIfNeeded(force: true)
+            await sendDamperGainIfNeeded(force: true)
         }
     }
 
@@ -376,6 +454,27 @@ final class BridgeManager: ObservableObject {
 
         lastSentRangeDegrees = clampedValue
         await sendControlCommand("SET_RANGE \(Int(clampedValue.rounded()))")
+    }
+
+    private func sendDamperEnabledIfNeeded(force: Bool = false) async {
+        if !force, let lastSentDamperEnabled, lastSentDamperEnabled == isDamperEnabled {
+            return
+        }
+
+        lastSentDamperEnabled = isDamperEnabled
+        await sendControlCommand("SET_DAMPER \(isDamperEnabled ? 1 : 0)")
+    }
+
+    private func sendDamperGainIfNeeded(force: Bool = false) async {
+        let value = Self.clamp(damperGain, min: 0.0, max: 1.0)
+        let roundedValue = (value * 100.0).rounded() / 100.0
+
+        if !force, let lastSentDamperGain, abs(lastSentDamperGain - roundedValue) < 0.001 {
+            return
+        }
+
+        lastSentDamperGain = roundedValue
+        await sendControlCommand("SET_DAMPER_GAIN \(String(format: "%.2f", roundedValue))")
     }
 
     private func sendControlCommand(_ command: String) async {
