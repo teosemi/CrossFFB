@@ -51,6 +51,12 @@
 #define DAMPER_FORCE_TYPE   0x02   // damper
 #define DAMPER_MAX_K        7      // i coefficienti Logitech vanno da 0 a 7
 
+// Il volante puo' sparire mentre il bridge gira. Senza questi controlli le
+// scritture fallivano in silenzio e l'app continuava a mostrare "Game
+// connected" con il volante scollegato.
+#define WHEEL_CHECK_SECONDS 2.0
+#define WHEEL_WRITE_FAILURE_LIMIT 10
+
 #define DEFAULT_DAMPER_ENABLED 1
 #define DEFAULT_DAMPER_GAIN 1.00
 
@@ -85,9 +91,14 @@ static pid_t g_parent_pid = -1;
 static double g_last_parent_check_ts = 0.0;
 
 static double g_last_stop_ts = 0.0;
+static double g_last_wheel_check_ts = 0.0;
+static int g_hid_write_failures = 0;
+static int g_wheel_lost = 0;
 
 static void poll_control_socket(void);
 static void check_parent_watchdog(void);
+static void check_wheel_watchdog(void);
+static void report_wheel_lost(const char *reason);
 
 static double now_seconds(void)
 {
@@ -152,6 +163,65 @@ static void handle_signal(int sig)
         close(g_control_server_fd);
         g_control_server_fd = -1;
     }
+}
+
+static void report_wheel_lost(const char *reason)
+{
+    if (g_wheel_lost)
+    {
+        return;
+    }
+
+    g_wheel_lost = 1;
+
+    // L'app riconosce questa riga e mostra "Wheel disconnected" invece di
+    // continuare a dichiarare il gioco connesso.
+    log_line("Wheel disconnected: %s", reason);
+    handle_signal(SIGTERM);
+}
+
+static int wheel_still_present(void)
+{
+    if (!g_hid_manager)
+    {
+        return 0;
+    }
+
+    CFSetRef devices = IOHIDManagerCopyDevices(g_hid_manager);
+
+    if (!devices)
+    {
+        return 0;
+    }
+
+    CFIndex count = CFSetGetCount(devices);
+    CFRelease(devices);
+
+    return count > 0;
+}
+
+static void check_wheel_watchdog(void)
+{
+    if (!g_wheel || g_wheel_lost)
+    {
+        return;
+    }
+
+    double t = now_seconds();
+
+    if ((t - g_last_wheel_check_ts) < WHEEL_CHECK_SECONDS)
+    {
+        return;
+    }
+
+    g_last_wheel_check_ts = t;
+
+    if (wheel_still_present())
+    {
+        return;
+    }
+
+    report_wheel_lost("device no longer present");
 }
 
 static void check_parent_watchdog(void)
@@ -300,6 +370,15 @@ static IOReturn send_command7(const uint8_t cmd7[7], const char *label, int verb
         print_cmd7(cmd7);
         printf(" rc=0x%08X\n", rc);
         fflush(stdout);
+    }
+
+    if (rc == kIOReturnSuccess)
+    {
+        g_hid_write_failures = 0;
+    }
+    else if (++g_hid_write_failures >= WHEEL_WRITE_FAILURE_LIMIT)
+    {
+        report_wheel_lost("output reports keep failing");
     }
 
     return rc;
@@ -943,6 +1022,7 @@ static void handle_control_client(int client_fd)
     {
         poll_control_socket();
         check_parent_watchdog();
+        check_wheel_watchdog();
 
         ssize_t n = recv(client_fd, recvbuf, sizeof(recvbuf), MSG_DONTWAIT);
 
@@ -1074,6 +1154,7 @@ static void handle_client(int client_fd)
     {
         poll_control_socket();
         check_parent_watchdog();
+        check_wheel_watchdog();
 
         ssize_t n = recv(client_fd, recvbuf, sizeof(recvbuf), MSG_DONTWAIT);
 
@@ -1383,6 +1464,7 @@ int main(int argc, char **argv)
 
         poll_control_socket();
         check_parent_watchdog();
+        check_wheel_watchdog();
 
         fd_set readfds;
         FD_ZERO(&readfds);

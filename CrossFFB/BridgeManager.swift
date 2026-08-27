@@ -46,6 +46,9 @@ final class BridgeManager: ObservableObject {
     private var lastSentDamperGain: Double?
     private var lastSentDamperEnabled: Bool?
 
+    /// Set when the user presses Stop, so reopening the menu does not undo it.
+    private var userRequestedStop = false
+
     private let gamePort: Int = 54321
     private let controlPort: UInt16 = 54322
     private let maxLogLines: Int = 300
@@ -105,7 +108,7 @@ final class BridgeManager: ObservableObject {
     }
 
     func startIfNeeded() {
-        guard !isRunning else {
+        guard !isRunning, !userRequestedStop else {
             return
         }
 
@@ -116,6 +119,8 @@ final class BridgeManager: ObservableObject {
         guard !isRunning else {
             return
         }
+
+        userRequestedStop = false
 
         guard let bridgeURL else {
             statusText = "Bridge file missing"
@@ -199,8 +204,8 @@ final class BridgeManager: ObservableObject {
                 manager.lastSentDamperEnabled = nil
                 manager.lastSentRangeDegrees = nil
 
-                if manager.statusText == "Wheel not found" {
-                    manager.appendLog("CrossFFB: bridge stopped because the wheel was not found")
+                if manager.statusText == "Wheel not found" || manager.statusText == "Wheel disconnected" {
+                    manager.appendLog("CrossFFB: bridge stopped, wheel unavailable (\(manager.statusText))")
                     return
                 }
 
@@ -235,6 +240,7 @@ final class BridgeManager: ObservableObject {
     }
 
     func stop() {
+        userRequestedStop = true
         gainDebounceTask?.cancel()
         rangeDebounceTask?.cancel()
         damperGainDebounceTask?.cancel()
@@ -584,6 +590,11 @@ final class BridgeManager: ObservableObject {
 
         if text.contains("Failed to open wheel") {
             statusText = "Wheel not found"
+            return
+        }
+
+        if text.contains("Wheel disconnected") {
+            statusText = "Wheel disconnected"
             return
         }
 
