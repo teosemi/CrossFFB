@@ -2,294 +2,226 @@
 //  MenuBarView.swift
 //  CrossFFB
 //
-//  Created by teo on 16/05/2026.
-//
 
 import SwiftUI
 import AppKit
 
 struct MenuBarView: View {
     @ObservedObject var bridgeManager: BridgeManager
+    @Environment(\.colorScheme) private var colorScheme
+
+    @State private var isEditingRange = false
+    @State private var rangeDraft = ""
+    @FocusState private var isRangeFieldFocused: Bool
+
+    private var theme: PanelTheme {
+        PanelTheme.forScheme(colorScheme)
+    }
+
+    private let rangePresets = [540, 720, 900]
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            headerView
+        VStack(alignment: .leading, spacing: 16) {
+            lampRow
+            ArcGauge(value: bridgeManager.rangeDegrees, bounds: 40...900, theme: theme)
+            presetRow
+            forceControl
+            damperControl
 
-            Divider()
+            Rectangle()
+                .fill(theme.rule)
+                .frame(height: 1)
 
-            controlsCard
-
-            Divider()
-
-            actionsCard
-
-            Divider()
-
-            logSection
-
-            Divider()
-
-            footerActions
+            footerRow
         }
-        .padding(14)
-        .frame(width: bridgeManager.isLogVisible ? 470 : 310)
-        .animation(.easeInOut(duration: 0.22), value: bridgeManager.isLogVisible)
+        .padding(16)
+        .frame(width: 300)
+        .background(theme.panel)
         .onAppear {
             bridgeManager.startIfNeeded()
+
+            if bridgeManager.isLogVisible {
+                LogHUDWindowController.shared.show(bridgeManager: bridgeManager)
+            }
         }
     }
 
-    private var headerView: some View {
-        HStack(spacing: 10) {
-            Image(systemName: bridgeManager.isRunning ? "steeringwheel.circle.fill" : "steeringwheel.circle")
-                .font(.system(size: 30))
-                .symbolRenderingMode(.hierarchical)
-
-            VStack(alignment: .leading, spacing: 3) {
-                Text("CrossFFB")
-                    .font(.headline)
-
-                HStack(spacing: 6) {
-                    Circle()
-                        .frame(width: 7, height: 7)
-                        .foregroundStyle(statusColor)
-
-                    Text(bridgeManager.statusText)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
-            }
+    private var lampRow: some View {
+        HStack(spacing: 12) {
+            StatusLamp(title: "WHEEL", isOn: bridgeManager.isWheelConnected, theme: theme)
+            StatusLamp(title: "GAME", isOn: bridgeManager.isGameConnected, theme: theme)
 
             Spacer()
 
             Button {
                 SetupWindowController.shared.show()
             } label: {
-                Label("Setup", systemImage: "gearshape")
-                    .labelStyle(.iconOnly)
+                Image(systemName: "gearshape")
+                    .font(.system(size: 13))
+                    .foregroundStyle(theme.dim)
             }
+            .buttonStyle(.plain)
             .help("Open CrossFFB Setup")
             .keyboardShortcut(",", modifiers: [.command])
         }
     }
 
-    private var controlsCard: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            gainControl
-            rangeControl
-            damperControl
+    @ViewBuilder
+    private var presetRow: some View {
+        if isEditingRange {
+            rangeEditor
+        } else {
+            PresetChips(
+                presets: rangePresets,
+                selected: rangePresets.first { Double($0) == bridgeManager.rangeDegrees.rounded() },
+                theme: theme,
+                onSelect: { bridgeManager.applyRangePreset(Double($0)) },
+                onCustom: {
+                    rangeDraft = String(Int(bridgeManager.rangeDegrees.rounded()))
+                    isEditingRange = true
+                    isRangeFieldFocused = true
+                }
+            )
         }
-        .padding(10)
-        .background(Color(nsColor: .controlBackgroundColor))
-        .clipShape(RoundedRectangle(cornerRadius: 10))
     }
 
-    private var gainControl: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack {
-                Label("FFB Gain", systemImage: "waveform.path")
-                    .font(.subheadline)
+    /// The gauge is a poor way to enter an exact angle, so SET swaps the presets
+    /// for a field. 40 to 900 is the range the bridge accepts.
+    private var rangeEditor: some View {
+        HStack(spacing: 8) {
+            TextField("", text: $rangeDraft)
+                .textFieldStyle(.plain)
+                .font(.condensed(15))
+                .foregroundStyle(theme.numeral)
+                .focused($isRangeFieldFocused)
+                .onSubmit(commitRange)
+                .padding(.vertical, 4)
+                .padding(.horizontal, 8)
+                .background(
+                    RoundedRectangle(cornerRadius: 6)
+                        .stroke(theme.accent, lineWidth: 1)
+                )
+
+            Text("DEGREES")
+                .font(.condensed(12, weight: .medium))
+                .tracking(1.2)
+                .foregroundStyle(theme.label)
+
+            Spacer()
+
+            Button(action: commitRange) {
+                Text("DONE")
+                    .font(.condensed(13, weight: .semibold))
+                    .tracking(1.2)
+                    .foregroundStyle(theme.accentText)
+            }
+            .buttonStyle(.plain)
+
+            Button {
+                isEditingRange = false
+            } label: {
+                Text("CANCEL")
+                    .font(.condensed(13, weight: .medium))
+                    .tracking(1.2)
+                    .foregroundStyle(theme.label)
+            }
+            .buttonStyle(.plain)
+        }
+    }
+
+    private func commitRange() {
+        if let typed = Double(rangeDraft.trimmingCharacters(in: .whitespaces)) {
+            bridgeManager.setRange(min(max(typed, 40), 900))
+        }
+
+        isEditingRange = false
+    }
+
+    private var forceControl: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 9) {
+                Image(systemName: "waveform.path")
+                    .font(.system(size: 13))
+                    .foregroundStyle(theme.icon)
+
+                Text("FORCE")
+                    .font(.condensed(14, weight: .medium))
+                    .tracking(1.4)
+                    .foregroundStyle(theme.label)
 
                 Spacer()
 
                 Text(String(format: "%.2f", bridgeManager.gain))
-                    .font(.system(.caption, design: .monospaced))
-                    .foregroundStyle(.secondary)
+                    .font(.condensed(26))
+                    .foregroundStyle(theme.numeral)
             }
 
-            Slider(
-                value: Binding(
-                    get: { bridgeManager.gain },
-                    set: { bridgeManager.setGain($0) }
-                ),
-                in: 0.0...1.5,
-                step: 0.05
+            StepScale(
+                fraction: bridgeManager.gain / 1.5,
+                steps: 16,
+                theme: theme,
+                onScrub: { bridgeManager.setGain($0 * 1.5) }
             )
         }
     }
 
     private var damperControl: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack {
-                Toggle(isOn: Binding(
-                    get: { bridgeManager.isDamperEnabled },
-                    set: { bridgeManager.setDamperEnabled($0) }
-                )) {
-                    Label("Damper", systemImage: "drop.fill")
-                        .font(.subheadline)
-                }
-                .toggleStyle(.checkbox)
-
-                Spacer()
-
-                Text(String(format: "%.2f", bridgeManager.damperGain))
-                    .font(.system(.caption, design: .monospaced))
-                    .foregroundStyle(bridgeManager.isDamperEnabled ? .secondary : .tertiary)
-            }
-
-            Slider(
-                value: Binding(
-                    get: { bridgeManager.damperGain },
-                    set: { bridgeManager.setDamperGain($0) }
-                ),
-                in: 0.0...1.0,
-                step: 0.05
-            )
-            .disabled(!bridgeManager.isDamperEnabled)
-        }
-        .help("Damping strength for games that ask for it, such as Assetto Corsa Competizione. Euro Truck Simulator 2 does not use it.")
+        ThickSlider(
+            title: "DAMPER",
+            value: String(format: "%.2f", bridgeManager.damperGain),
+            fraction: bridgeManager.damperGain,
+            systemImage: "drop.fill",
+            theme: theme,
+            onScrub: { bridgeManager.setDamperGain($0) }
+        )
     }
 
-    private var rangeControl: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Label("Steering Range", systemImage: "gauge")
-                    .font(.subheadline)
+    private var footerRow: some View {
+        HStack(spacing: 14) {
+            footerButton("RESET") {
+                bridgeManager.resetWheel()
+            }
+            .disabled(!bridgeManager.isRunning)
 
-                Spacer()
-
-                Text("\(Int(bridgeManager.rangeDegrees.rounded()))°")
-                    .font(.system(.caption, design: .monospaced))
-                    .foregroundStyle(.secondary)
+            footerButton(bridgeManager.isLogVisible ? "HIDE LOG" : "LOG") {
+                bridgeManager.toggleLogVisibility()
+                LogHUDWindowController.shared.setVisible(
+                    bridgeManager.isLogVisible,
+                    bridgeManager: bridgeManager
+                )
             }
 
-            Slider(
-                value: Binding(
-                    get: { bridgeManager.rangeDegrees },
-                    set: { bridgeManager.setRange($0) }
-                ),
-                in: 40...900,
-                step: 10
-            )
-
-            HStack(spacing: 8) {
-                Button("540°") {
-                    bridgeManager.applyRangePreset(540)
-                }
-
-                Button("720°") {
-                    bridgeManager.applyRangePreset(720)
-                }
-
-                Button("900°") {
-                    bridgeManager.applyRangePreset(900)
-                }
-            }
-            .buttonStyle(.bordered)
-            .controlSize(.small)
-        }
-    }
-
-    private var actionsCard: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 8) {
-                if bridgeManager.isRunning {
-                    Button {
-                        bridgeManager.resetWheel()
-                    } label: {
-                        Label("Reset Wheel", systemImage: "arrow.counterclockwise")
-                    }
-
-                    Button {
-                        bridgeManager.stop()
-                    } label: {
-                        Label("Stop", systemImage: "stop.fill")
-                    }
-                } else {
-                    Button {
-                        bridgeManager.start()
-                    } label: {
-                        Label("Start", systemImage: "play.fill")
-                    }
-                }
-            }
-            .buttonStyle(.bordered)
-        }
-    }
-
-    private var logSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Button {
-                    withAnimation(.easeInOut(duration: 0.22)) {
-                        bridgeManager.toggleLogVisibility()
-                    }
-                } label: {
-                    Label(
-                        bridgeManager.isLogVisible ? "Hide Log" : "Show Log",
-                        systemImage: bridgeManager.isLogVisible ? "chevron.up" : "chevron.down"
-                    )
-                }
-                .buttonStyle(.plain)
-
-                Spacer()
-
-                if bridgeManager.isLogVisible {
-                    Button("Clear") {
-                        bridgeManager.clearLog()
-                    }
-                    .font(.caption)
-                    .transition(.opacity)
-                }
-            }
-
-            if bridgeManager.isLogVisible {
-                ScrollViewReader { proxy in
-                    ScrollView {
-                        Text(bridgeManager.logText.isEmpty ? "No log output yet." : bridgeManager.logText)
-                            .font(.system(size: 10, design: .monospaced))
-                            .foregroundStyle(bridgeManager.logText.isEmpty ? .secondary : .primary)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .textSelection(.enabled)
-                            .id("log-bottom")
-                            .padding(8)
-                    }
-                    .frame(height: 170)
-                    .background(Color(nsColor: .textBackgroundColor))
-                    .clipShape(RoundedRectangle(cornerRadius: 8))
-                    .transition(
-                        .asymmetric(
-                            insertion: .opacity.combined(with: .move(edge: .top)),
-                            removal: .opacity.combined(with: .move(edge: .top))
-                        )
-                    )
-                    .onChange(of: bridgeManager.logText) { _, _ in
-                        proxy.scrollTo("log-bottom", anchor: .bottom)
-                    }
-                }
-            }
-        }
-    }
-
-    private var footerActions: some View {
-        HStack {
             Spacer()
 
-            Button {
+            if bridgeManager.isRunning {
+                footerButton("STOP", tint: theme.accentText) {
+                    bridgeManager.stop()
+                }
+            } else {
+                footerButton("START", tint: theme.accentText) {
+                    bridgeManager.start()
+                }
+            }
+
+            footerButton("QUIT") {
+                LogHUDWindowController.shared.close()
                 bridgeManager.stopForAppTermination()
                 NSApplication.shared.terminate(nil)
-            } label: {
-                Label("Quit", systemImage: "power")
             }
-            .buttonStyle(.plain)
         }
-        .foregroundStyle(.secondary)
     }
 
-    private var statusColor: Color {
-        switch bridgeManager.statusText {
-        case "Running", "Wheel connected", "Game connected", "Gain updated", "Range updated", "Wheel reset":
-            return .green
-
-        case "Starting...", "Stopping...":
-            return .orange
-
-        case "Wheel not found", "Bridge file missing", "Bridge not executable":
-            return .red
-
-        default:
-            return bridgeManager.isRunning ? .green : .secondary
+    private func footerButton(
+        _ title: String,
+        tint: Color? = nil,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            Text(title)
+                .font(.condensed(13, weight: tint == nil ? .medium : .semibold))
+                .tracking(1.3)
+                .foregroundStyle(tint ?? theme.label)
         }
+        .buttonStyle(.plain)
     }
 }

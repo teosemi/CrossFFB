@@ -31,6 +31,11 @@ final class BridgeManager: ObservableObject {
     @Published var gain: Double
     @Published var rangeDegrees: Double
 
+    /// The panel shows wheel and game as separate lamps, so a dead wheel cannot
+    /// hide behind a connected game.
+    @Published var isWheelConnected: Bool = false
+    @Published var isGameConnected: Bool = false
+
     /// Condition damper, used by ACC and ignored by ETS2.
     @Published var isDamperEnabled: Bool
     @Published var damperGain: Double
@@ -115,7 +120,7 @@ final class BridgeManager: ObservableObject {
     private static let g29ProductID = 0xC24F
 
     /// Asks the IOKit registry whether the wheel is attached right now.
-    private static func isWheelConnected() -> Bool {
+    private static func isWheelAttached() -> Bool {
         guard let matching = IOServiceMatching("IOHIDDevice") as NSMutableDictionary? else {
             return false
         }
@@ -164,7 +169,7 @@ final class BridgeManager: ObservableObject {
                     return
                 }
 
-                if Self.isWheelConnected() {
+                if Self.isWheelAttached() {
                     self.appendLog("CrossFFB: wheel detected, starting bridge")
                     self.start()
                     return
@@ -267,6 +272,8 @@ final class BridgeManager: ObservableObject {
                 manager.process = nil
                 manager.outputPipe = nil
                 manager.isRunning = false
+                manager.isWheelConnected = false
+                manager.isGameConnected = false
                 manager.lastSentGain = nil
                 manager.lastSentDamperGain = nil
                 manager.lastSentDamperEnabled = nil
@@ -299,6 +306,8 @@ final class BridgeManager: ObservableObject {
             self.process = nil
             self.outputPipe = nil
             isRunning = false
+            isWheelConnected = false
+            isGameConnected = false
             lastSentGain = nil
             lastSentRangeDegrees = nil
             lastSentDamperGain = nil
@@ -501,8 +510,16 @@ final class BridgeManager: ObservableObject {
     }
 
     func toggleLogVisibility() {
-        isLogVisible.toggle()
-        UserDefaults.standard.set(isLogVisible, forKey: DefaultsKey.isLogVisible)
+        setLogVisible(!isLogVisible)
+    }
+
+    func setLogVisible(_ visible: Bool) {
+        guard isLogVisible != visible else {
+            return
+        }
+
+        isLogVisible = visible
+        UserDefaults.standard.set(visible, forKey: DefaultsKey.isLogVisible)
     }
 
     func clearLog() {
@@ -650,26 +667,32 @@ final class BridgeManager: ObservableObject {
         }
 
         if text.contains("TCP client connected") {
+            isGameConnected = true
             statusText = "Game connected"
             return
         }
 
         if text.contains("TCP client disconnected") {
+            isGameConnected = false
             statusText = "Running"
             return
         }
 
         if text.contains("Failed to open wheel") {
+            isWheelConnected = false
             statusText = "Wheel not found"
             return
         }
 
         if text.contains("Wheel disconnected") {
+            isWheelConnected = false
+            isGameConnected = false
             statusText = "Wheel disconnected"
             return
         }
 
         if text.contains("IOHIDDeviceOpen main joystick rc=0x00000000") {
+            isWheelConnected = true
             statusText = "Wheel connected"
             return
         }
