@@ -277,10 +277,13 @@ struct ThickSlider<Value: View>: View {
             .clipShape(RoundedRectangle(cornerRadius: 10))
             .contentShape(Rectangle())
             .gesture(
-                DragGesture(minimumDistance: 0)
+                // A few points of travel before this counts as a drag, so the
+                // whole tile stays grabbable - the value sits at the right hand
+                // end, and a double click on it must not slam the tile to full
+                // before opening the field.
+                DragGesture(minimumDistance: 3)
                     .onChanged { drag in
                         guard geometry.size.width > 0 else { return }
-                        guard drag.startLocation.x < geometry.size.width - 74 else { return }
 
                         let ratio = drag.location.x / geometry.size.width
                         onScrub?(min(max(ratio, 0), 1))
