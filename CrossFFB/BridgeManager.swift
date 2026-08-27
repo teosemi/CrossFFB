@@ -9,6 +9,7 @@ import Foundation
 import AppKit
 import Combine
 import Network
+import IOKit
 
 @MainActor
 final class BridgeManager: ObservableObject {
@@ -48,6 +49,9 @@ final class BridgeManager: ObservableObject {
 
     /// Set when the user presses Stop, so reopening the menu does not undo it.
     private var userRequestedStop = false
+
+    /// Polls for the wheel after it goes missing, so plugging it back in is enough.
+    private var wheelWatchTask: Task<Void, Never>?
 
     private let gamePort: Int = 54321
     private let controlPort: UInt16 = 54322
@@ -107,6 +111,68 @@ final class BridgeManager: ObservableObject {
         rangeDegrees = Self.clamp(rangeDegrees, min: 40, max: 900)
     }
 
+    private static let logitechVendorID = 0x046D
+    private static let g29ProductID = 0xC24F
+
+    /// Asks the IOKit registry whether the wheel is attached right now.
+    private static func isWheelConnected() -> Bool {
+        guard let matching = IOServiceMatching("IOHIDDevice") as NSMutableDictionary? else {
+            return false
+        }
+
+        matching["VendorID"] = NSNumber(value: logitechVendorID)
+        matching["ProductID"] = NSNumber(value: g29ProductID)
+
+        var iterator: io_iterator_t = 0
+
+        guard IOServiceGetMatchingServices(kIOMainPortDefault, matching, &iterator) == KERN_SUCCESS else {
+            return false
+        }
+
+        defer {
+            IOObjectRelease(iterator)
+        }
+
+        let service = IOIteratorNext(iterator)
+
+        guard service != 0 else {
+            return false
+        }
+
+        IOObjectRelease(service)
+        return true
+    }
+
+    /// The bridge exits when the wheel is missing, so instead of respawning it
+    /// into the same failure the app waits for the device to come back.
+    private func waitForWheelThenStart() {
+        wheelWatchTask?.cancel()
+
+        wheelWatchTask = Task { [weak self] in
+            while !Task.isCancelled {
+                do {
+                    try await Task.sleep(nanoseconds: 2_000_000_000)
+                } catch {
+                    return
+                }
+
+                guard let self, !Task.isCancelled else {
+                    return
+                }
+
+                guard !self.userRequestedStop, !self.isRunning else {
+                    return
+                }
+
+                if Self.isWheelConnected() {
+                    self.appendLog("CrossFFB: wheel detected, starting bridge")
+                    self.start()
+                    return
+                }
+            }
+        }
+    }
+
     func startIfNeeded() {
         guard !isRunning, !userRequestedStop else {
             return
@@ -121,6 +187,8 @@ final class BridgeManager: ObservableObject {
         }
 
         userRequestedStop = false
+        wheelWatchTask?.cancel()
+        wheelWatchTask = nil
 
         guard let bridgeURL else {
             statusText = "Bridge file missing"
@@ -206,6 +274,7 @@ final class BridgeManager: ObservableObject {
 
                 if manager.statusText == "Wheel not found" || manager.statusText == "Wheel disconnected" {
                     manager.appendLog("CrossFFB: bridge stopped, wheel unavailable (\(manager.statusText))")
+                    manager.waitForWheelThenStart()
                     return
                 }
 
@@ -241,6 +310,8 @@ final class BridgeManager: ObservableObject {
 
     func stop() {
         userRequestedStop = true
+        wheelWatchTask?.cancel()
+        wheelWatchTask = nil
         gainDebounceTask?.cancel()
         rangeDebounceTask?.cancel()
         damperGainDebounceTask?.cancel()
