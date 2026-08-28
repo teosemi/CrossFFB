@@ -12,11 +12,8 @@ Made by **Matteo Seminara & Maurizio Seminara**.
 
 ## Download
 
-Download the latest DMG from the **Releases** section:
-
-**CrossFFB-1.0.0.dmg**
-
-The app is signed and notarized with Apple Developer ID.
+Download the latest DMG from the [Releases](https://github.com/teosemi/CrossFFB/releases/latest)
+page. The app is signed and notarized with an Apple Developer ID.
 
 ---
 
@@ -54,13 +51,13 @@ The Windows proxy is installed locally in the selected game folder.
 
 ## Installation
 
-1. Download `CrossFFB-1.0.0.dmg`.
-2. Open the DMG.
-3. Drag `CrossFFB.app` to Applications.
-4. Open CrossFFB.
-5. Open **Setup** from the menu bar.
-6. Choose the folder that contains the Windows game executable.
-7. Press **Install Proxy**.
+1. Download the DMG and open it.
+2. Drag `CrossFFB.app` to Applications.
+3. Open CrossFFB. It starts its bridge and opens a checklist of what is left
+   to do.
+4. Choose the folder that contains the Windows game executable, either from the
+   checklist or from **Setup** behind the gear in the panel.
+5. Press **Install Proxy**.
 
 For Euro Truck Simulator 2, choose the folder that contains:
 
@@ -111,26 +108,54 @@ Then install the proxy from CrossFFB Setup.
 
 ## Usage
 
-1. Start CrossFFB.
-2. Make sure the Logitech G29 is connected via USB.
+1. Start CrossFFB. The bridge starts with it; you do not have to press anything.
+2. Connect the Logitech G29 over USB. Unplug it and CrossFFB notices; plug it
+   back in and the bridge restarts on its own.
 3. Start the Windows game.
-4. When the game connects, CrossFFB should show:
 
-```text
-Game connected
-```
+Click the steering wheel in the menu bar for the panel.
 
-You can adjust:
+### The panel
 
-- **FFB Gain**: force strength
-- **Steering Range**: wheel rotation degrees
+Two lamps at the top say what is live: **WHEEL** when the G29 is open, **GAME**
+when a game is talking to the bridge. Both green means force feedback is
+flowing.
+
+- **The arc** is the steering range. Drag along it, tap 540 / 720 / 900, or type
+  an exact angle.
+- **FORCE** is the force feedback gain, on a scale you drag anywhere along.
+- **DAMPER** is a thick surface you can grab anywhere. Zero turns it off.
+
+**Every number can be typed**: double click it, enter a value, press Return.
+Escape or a click elsewhere cancels.
 
 Recommended starting values:
 
 ```text
-FFB Gain: 1.00
-Steering Range: 900°
+FORCE:  1.00
+RANGE:  900°
+DAMPER: 1.00
 ```
+
+### Damper
+
+Some games ask for a damper alongside the constant force - Assetto Corsa
+Competizione updates it constantly while you drive, and it is what gives the
+wheel its weight. Euro Truck Simulator 2 never asks for it, so the setting does
+nothing there.
+
+### Log
+
+**LOG** opens a translucent window pinned to the top left of the screen, showing
+the lamps and the tail of the bridge log. It floats over a game running windowed
+or borderless; nothing can float over an exclusive-fullscreen game.
+
+### First run
+
+The first launch opens a checklist of the four things between a fresh install
+and force feedback - wheel, game folder, proxy, Wine override - which fills
+itself in as you do them. It stays available from **Help** in the menu bar, and
+is the first place to look when something stops working.
 
 ---
 
@@ -158,13 +183,14 @@ drive_c/windows/syswow64
 
 ## Troubleshooting
 
-### CrossFFB shows “Wheel not found”
+### The WHEEL lamp is dark
 
-- Make sure the Logitech G29 is connected via USB.
-- Quit and reopen CrossFFB.
+- Make sure the Logitech G29 is connected via USB. CrossFFB starts the bridge
+  again by itself within a couple of seconds of the wheel reappearing.
 - Keep your hands away from the wheel while the bridge starts.
+- If the panel shows a warning row instead, it names what went wrong.
 
-### The game does not connect
+### The GAME lamp stays dark
 
 Check that:
 
@@ -173,13 +199,18 @@ Check that:
 - You selected the correct game folder.
 - You are running the 64-bit version of the game.
 
-### Force Feedback is too weak or too strong
+### Force feedback is too weak or too strong
 
-Adjust **FFB Gain** from the CrossFFB menu bar.
+Adjust **FORCE** in the panel, while driving if you like - it applies straight
+away.
 
 ### Steering rotation feels wrong
 
-Adjust **Steering Range** from the CrossFFB menu bar.
+Adjust the arc, or type the angle the game expects.
+
+### The wheel feels heavy or dead in Assetto Corsa Competizione
+
+Adjust **DAMPER**. At zero the damper is off entirely.
 
 ---
 
@@ -276,6 +307,8 @@ it is enabled.
 - Logitech G29 only for now.
 - 64-bit Windows games only.
 - Tested mainly with Euro Truck Simulator 2 and Assetto Corsa Competizione.
+- Constant force and damper are supported; no game tested so far asks for any
+  other effect.
 - Tested on Apple Silicon only, although the app and its helper are built as universal binaries.
 - CrossOver/Wine setup still requires manually setting `dinput8 = native,builtin`.
 
