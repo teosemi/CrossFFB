@@ -86,14 +86,22 @@ struct OnboardingView: View {
     }
 
     private var folderRow: some View {
-        ChecklistRow(
+        let chosen = proxyInstaller.gameFolderURL
+
+        return ChecklistRow(
             title: "Game folder chosen",
-            detail: proxyInstaller.gameFolderURL.map { $0.lastPathComponent } ?? "Not chosen yet",
-            state: proxyInstaller.gameFolderURL == nil ? .todo : .done,
+            detail: chosen?.path ?? "Not chosen yet",
+            state: chosen == nil ? .todo : .done,
             theme: theme,
-            action: proxyInstaller.gameFolderURL == nil
-                ? .init(title: "Choose", isProminent: true) { proxyInstaller.chooseGameFolder() }
-                : nil
+            action: .init(
+                title: chosen == nil ? "Choose" : "Change",
+                isProminent: chosen == nil
+            ) {
+                proxyInstaller.chooseGameFolder()
+            },
+            detailFont: chosen == nil
+                ? .system(size: 11)
+                : .system(size: 10.5, design: .monospaced)
         )
     }
 

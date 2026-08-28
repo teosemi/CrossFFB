@@ -413,6 +413,8 @@ struct ChecklistRow: View {
     let state: State
     let theme: PanelTheme
     let action: Action?
+    /// Paths read better monospaced, and they are long enough to want the room.
+    var detailFont: Font = .system(size: 11)
 
     var body: some View {
         HStack(spacing: 12) {
@@ -425,8 +427,9 @@ struct ChecklistRow: View {
                     .foregroundStyle(theme.numeral)
 
                 Text(detail)
-                    .font(.system(size: 11))
+                    .font(detailFont)
                     .foregroundStyle(theme.dim)
+                    .textSelection(.enabled)
                     .fixedSize(horizontal: false, vertical: true)
             }
 
