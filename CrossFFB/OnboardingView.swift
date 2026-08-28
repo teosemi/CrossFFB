@@ -125,14 +125,15 @@ struct OnboardingView: View {
         )
     }
 
-    /// CrossFFB cannot set the bottle override, and cannot read it either - but a
-    /// game that reaches the bridge proves it took.
+    /// CrossFFB cannot set the bottle override yet, and cannot read it either -
+    /// but a game that reaches the bridge proves it took. Patching the bottle
+    /// safely is on the list; until then this row hands over the line to paste.
     private var overrideRow: some View {
         ChecklistRow(
             title: "Wine override set",
             detail: bridgeManager.hasSeenGameConnect
                 ? "Confirmed: a game has reached the bridge"
-                : "\(wineOverride) - CrossFFB cannot do this one for you",
+                : "\(wineOverride) - CrossFFB cannot set this for you yet",
             state: bridgeManager.hasSeenGameConnect ? .done : .attention,
             theme: theme,
             action: bridgeManager.hasSeenGameConnect
