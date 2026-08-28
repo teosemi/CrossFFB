@@ -26,6 +26,11 @@ final class BridgeManager: ObservableObject {
 
     @Published var isRunning: Bool = false
     @Published var statusText: String = "Stopped"
+
+    /// Set only when something is actually wrong. The panel shows lamps rather
+    /// than a status line, so failures need somewhere of their own to surface
+    /// instead of being inferred from the text of statusText.
+    @Published var problemText: String?
     @Published var isLogVisible: Bool
     @Published var logText: String = ""
 
@@ -196,24 +201,28 @@ final class BridgeManager: ObservableObject {
             return
         }
 
+        problemText = nil
         userRequestedStop = false
         wheelWatchTask?.cancel()
         wheelWatchTask = nil
 
         guard let bridgeURL else {
             statusText = "Bridge file missing"
+            problemText = "Bridge file missing"
             appendLog("CrossFFB: bridge file missing. Build it with scripts/prepare_resources.sh so it is embedded in the app bundle, or set CROSSFFB_BRIDGE_PATH to an existing g29_ffb_bridge binary.")
             return
         }
 
         guard FileManager.default.fileExists(atPath: bridgeURL.path) else {
             statusText = "Bridge file missing"
+            problemText = "Bridge file missing"
             appendLog("CrossFFB: bridge file missing at \(bridgeURL.path)")
             return
         }
 
         guard FileManager.default.isExecutableFile(atPath: bridgeURL.path) else {
             statusText = "Bridge not executable"
+            problemText = "Bridge not executable"
             appendLog("CrossFFB: bridge is not executable at \(bridgeURL.path)")
             return
         }
@@ -285,6 +294,7 @@ final class BridgeManager: ObservableObject {
                 manager.lastSentRangeDegrees = nil
 
                 if manager.statusText == "Wheel not found" || manager.statusText == "Wheel disconnected" {
+                    manager.problemText = manager.statusText
                     manager.appendLog("CrossFFB: bridge stopped, wheel unavailable (\(manager.statusText))")
                     manager.waitForWheelThenStart()
                     return
@@ -295,6 +305,7 @@ final class BridgeManager: ObservableObject {
                     manager.appendLog("CrossFFB: bridge stopped")
                 } else {
                     manager.statusText = "Bridge error code \(terminationStatus)"
+                    manager.problemText = "Bridge stopped with code \(terminationStatus)"
                     manager.appendLog("CrossFFB: bridge stopped with code \(terminationStatus)")
                 }
             }
@@ -318,11 +329,13 @@ final class BridgeManager: ObservableObject {
             lastSentDamperGain = nil
             lastSentDamperEnabled = nil
             statusText = "Start failed: \(error.localizedDescription)"
+            problemText = "Start failed: \(error.localizedDescription)"
             appendLog("CrossFFB: start failed: \(error.localizedDescription)")
         }
     }
 
     func stop() {
+        problemText = nil
         userRequestedStop = true
         wheelWatchTask?.cancel()
         wheelWatchTask = nil
@@ -667,6 +680,7 @@ final class BridgeManager: ObservableObject {
 
     private func handleBridgeOutput(_ text: String) {
         if text.contains("CONTROL TCP listening") {
+            problemText = nil
             statusText = "Running"
             return
         }

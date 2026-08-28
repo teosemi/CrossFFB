@@ -21,6 +21,11 @@ struct MenuBarView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             lampRow
+
+            if let problem = bridgeManager.problemText {
+                problemRow(problem)
+            }
+
             rangeGauge
             presetRow
             forceControl
@@ -66,6 +71,27 @@ struct MenuBarView: View {
             .help("Open CrossFFB Setup")
             .keyboardShortcut(",", modifiers: [.command])
         }
+    }
+
+    /// Only appears when something failed; the lamps carry the normal case.
+    private func problemRow(_ text: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.system(size: 11))
+                .foregroundStyle(theme.warning)
+
+            Text(text)
+                .font(.system(size: 11))
+                .foregroundStyle(theme.body)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 9)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 9)
+                .fill(theme.surface)
+        )
     }
 
     private var rangeGauge: some View {
