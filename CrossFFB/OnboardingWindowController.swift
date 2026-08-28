@@ -29,7 +29,7 @@ final class OnboardingWindowController: NSObject, NSWindowDelegate {
         let hostingController = NSHostingController(rootView: onboardingView)
 
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 680, height: 480),
+            contentRect: NSRect(x: 0, y: 0, width: 700, height: 430),
             styleMask: [.titled, .closable, .miniaturizable],
             backing: .buffered,
             defer: false

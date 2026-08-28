@@ -34,6 +34,9 @@ final class ProxyInstaller: ObservableObject {
     @Published var isVerboseLogEnabled: Bool = false
     @Published var verboseLogDetailText: String = ""
 
+    /// The onboarding checklist needs a plain yes or no, not a sentence.
+    @Published var isProxyInstalled: Bool = false
+
     @Published var proxyStatusText: String = "Proxy status unknown"
     @Published var proxyStatusIcon: String = "questionmark.circle"
     @Published var proxyStatusColor: Color = .secondary
@@ -115,6 +118,7 @@ final class ProxyInstaller: ObservableObject {
             isVerboseLogEnabled = false
             verboseLogDetailText = ""
 
+            isProxyInstalled = false
             proxyStatusText = "Proxy status unknown"
             proxyStatusIcon = "questionmark.circle"
             proxyStatusColor = .secondary
@@ -133,6 +137,7 @@ final class ProxyInstaller: ObservableObject {
             isVerboseLogEnabled = false
             verboseLogDetailText = ""
 
+            isProxyInstalled = false
             proxyStatusText = "Proxy status unknown"
             proxyStatusIcon = "questionmark.circle"
             proxyStatusColor = .secondary
@@ -340,6 +345,7 @@ final class ProxyInstaller: ObservableObject {
         let backupExists = fileManager.fileExists(atPath: backupURL.path)
 
         guard let bundledProxyURL else {
+            isProxyInstalled = false
             proxyStatusText = "Proxy source missing"
             proxyStatusIcon = "xmark.circle"
             proxyStatusColor = .red
@@ -347,6 +353,7 @@ final class ProxyInstaller: ObservableObject {
         }
 
         guard targetExists else {
+            isProxyInstalled = false
             proxyStatusText = backupExists ? "Not installed, backup found" : "Not installed"
             proxyStatusIcon = backupExists ? "exclamationmark.triangle" : "minus.circle"
             proxyStatusColor = backupExists ? .orange : .secondary
@@ -354,10 +361,12 @@ final class ProxyInstaller: ObservableObject {
         }
 
         if filesHaveSameSHA256(targetProxyURL, bundledProxyURL) {
+            isProxyInstalled = true
             proxyStatusText = "Installed"
             proxyStatusIcon = "checkmark.circle"
             proxyStatusColor = .green
         } else {
+            isProxyInstalled = false
             proxyStatusText = "Different dinput8.dll found"
             proxyStatusIcon = "exclamationmark.triangle"
             proxyStatusColor = .orange

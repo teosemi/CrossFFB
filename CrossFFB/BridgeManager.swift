@@ -20,6 +20,7 @@ final class BridgeManager: ObservableObject {
         static let rangeDegrees = "crossffb.rangeDegrees"
         static let isLogVisible = "crossffb.isLogVisible"
         static let damperGain = "crossffb.damperGain"
+        static let hasSeenGameConnect = "crossffb.hasSeenGameConnect"
         static let isDamperEnabled = "crossffb.damperEnabled"
     }
 
@@ -35,6 +36,10 @@ final class BridgeManager: ObservableObject {
     /// hide behind a connected game.
     @Published var isWheelConnected: Bool = false
     @Published var isGameConnected: Bool = false
+
+    /// A game that reaches the bridge proves the bottle override took, which is
+    /// the one step CrossFFB cannot perform or inspect itself.
+    @Published var hasSeenGameConnect: Bool = UserDefaults.standard.bool(forKey: DefaultsKey.hasSeenGameConnect)
 
     /// Condition damper, used by ACC and ignored by ETS2.
     @Published var isDamperEnabled: Bool
@@ -668,6 +673,12 @@ final class BridgeManager: ObservableObject {
 
         if text.contains("TCP client connected") {
             isGameConnected = true
+
+            if !hasSeenGameConnect {
+                hasSeenGameConnect = true
+                UserDefaults.standard.set(true, forKey: DefaultsKey.hasSeenGameConnect)
+            }
+
             statusText = "Game connected"
             return
         }

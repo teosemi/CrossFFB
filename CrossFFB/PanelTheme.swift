@@ -22,6 +22,8 @@ struct PanelTheme {
     let rule: Color
     let lamp: Color
     let lampOff: Color
+    let warning: Color
+    let body: Color
 
     static func forScheme(_ scheme: ColorScheme) -> PanelTheme {
         scheme == .dark ? .dark : .light
@@ -43,7 +45,9 @@ struct PanelTheme {
         track: Color.white.opacity(0.12),
         rule: Color.white.opacity(0.09),
         lamp: Color(red: 0.239, green: 0.863, blue: 0.420),
-        lampOff: Color.white.opacity(0.18)
+        lampOff: Color.white.opacity(0.18),
+        warning: Color(red: 1.0, green: 0.690, blue: 0.125),
+        body: Color.white.opacity(0.72)
     )
 
     static let light = PanelTheme(
@@ -60,7 +64,10 @@ struct PanelTheme {
         track: Color.black.opacity(0.10),
         rule: Color.black.opacity(0.09),
         lamp: Color(red: 0.133, green: 0.698, blue: 0.298),
-        lampOff: Color.black.opacity(0.18)
+        lampOff: Color.black.opacity(0.18),
+        // A pale amber vanishes on white, so the light theme takes a darker one.
+        warning: Color(red: 0.722, green: 0.455, blue: 0.0),
+        body: Color.black.opacity(0.72)
     )
 }
 

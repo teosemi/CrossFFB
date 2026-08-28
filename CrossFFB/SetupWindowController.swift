@@ -29,7 +29,7 @@ final class SetupWindowController: NSObject, NSWindowDelegate {
         let hostingController = NSHostingController(rootView: setupView)
 
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 620, height: 420),
+            contentRect: NSRect(x: 0, y: 0, width: 700, height: 470),
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered,
             defer: false

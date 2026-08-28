@@ -367,3 +367,105 @@ struct StatusLamp: View {
         }
     }
 }
+
+/// A bordered button, or a filled one for the single action that matters on a
+/// screen. Used by Setup and the onboarding checklist.
+struct InstrumentButtonStyle: ButtonStyle {
+    let theme: PanelTheme
+    var isProminent: Bool = false
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.system(size: 12, weight: isProminent ? .semibold : .regular))
+            .foregroundStyle(isProminent ? Color.white : theme.body)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 6)
+            .background(
+                RoundedRectangle(cornerRadius: 7)
+                    .fill(isProminent ? theme.accent : Color.clear)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 7)
+                    .stroke(isProminent ? Color.clear : theme.track, lineWidth: 1)
+            )
+            .opacity(configuration.isPressed ? 0.7 : 1)
+            .contentShape(Rectangle())
+    }
+}
+
+/// One line of the onboarding checklist.
+struct ChecklistRow: View {
+    enum State {
+        case done
+        case todo
+        /// Something CrossFFB cannot do for you.
+        case attention
+    }
+
+    struct Action {
+        let title: String
+        var isProminent: Bool = false
+        let perform: () -> Void
+    }
+
+    let title: String
+    let detail: String
+    let state: State
+    let theme: PanelTheme
+    let action: Action?
+
+    var body: some View {
+        HStack(spacing: 12) {
+            marker
+                .frame(width: 14)
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title)
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(theme.numeral)
+
+                Text(detail)
+                    .font(.system(size: 11))
+                    .foregroundStyle(theme.dim)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Spacer()
+
+            if let action {
+                Button(action.title, action: action.perform)
+                    .buttonStyle(InstrumentButtonStyle(theme: theme, isProminent: action.isProminent))
+            } else if state == .done {
+                Text("Done")
+                    .font(.system(size: 11))
+                    .foregroundStyle(theme.dim)
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 13)
+        .background(
+            RoundedRectangle(cornerRadius: 10)
+                .fill(theme.surface)
+        )
+    }
+
+    @ViewBuilder
+    private var marker: some View {
+        switch state {
+        case .done:
+            Image(systemName: "checkmark")
+                .font(.system(size: 11, weight: .bold))
+                .foregroundStyle(theme.lamp)
+
+        case .todo:
+            Circle()
+                .stroke(theme.track, lineWidth: 1.6)
+                .frame(width: 10, height: 10)
+
+        case .attention:
+            Circle()
+                .stroke(theme.warning, lineWidth: 1.6)
+                .frame(width: 10, height: 10)
+        }
+    }
+}

@@ -2,180 +2,249 @@
 //  SetupView.swift
 //  CrossFFB
 //
-//  Created by teo on 16/05/2026.
-//
 
 import SwiftUI
 import AppKit
 
 struct SetupView: View {
-    @StateObject private var proxyInstaller = ProxyInstaller.shared
+    @ObservedObject var proxyInstaller: ProxyInstaller = .shared
+    @Environment(\.colorScheme) private var colorScheme
+
+    private var theme: PanelTheme {
+        PanelTheme.forScheme(colorScheme)
+    }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            HStack {
-                Image(systemName: "steeringwheel")
-                    .font(.system(size: 32))
+        VStack(spacing: 0) {
+            header
 
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("CrossFFB Setup")
-                        .font(.title2)
-                        .bold()
+            Divider().overlay(theme.rule)
 
-                    Text("Install the Windows proxy in a game folder.")
-                        .foregroundStyle(.secondary)
-                }
+            HStack(alignment: .top, spacing: 0) {
+                leftColumn
+                    .frame(maxWidth: .infinity, alignment: .leading)
 
-                Spacer()
+                Divider().overlay(theme.rule)
 
-                Button {
-                    OnboardingWindowController.shared.show()
-                } label: {
-                    Label("Help", systemImage: "questionmark.circle")
-                }
+                rightColumn
+                    .frame(width: 260, alignment: .leading)
             }
 
-            Divider()
+            Spacer(minLength: 0)
 
-            VStack(alignment: .leading, spacing: 10) {
-                HStack {
-                    Text("Game Folder")
-                        .font(.headline)
+            Divider().overlay(theme.rule)
 
-                    Spacer()
+            footer
+        }
+        .frame(minWidth: 680, minHeight: 460)
+        .background(theme.panel)
+        .onAppear {
+            proxyInstaller.refreshStatus()
+        }
+    }
 
-                    Button("Choose Folder...") {
-                        proxyInstaller.chooseGameFolder()
-                    }
-                }
+    private var header: some View {
+        HStack(spacing: 10) {
+            Text("Setup")
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(theme.numeral)
 
+            Spacer()
+
+            Button("Help") {
+                OnboardingWindowController.shared.show()
+            }
+            .buttonStyle(InstrumentButtonStyle(theme: theme))
+        }
+        .padding(.horizontal, 20)
+        .padding(.vertical, 16)
+    }
+
+    private var leftColumn: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            section("GAME FOLDER") {
                 Text(proxyInstaller.folderText)
-                    .font(.system(size: 11, design: .monospaced))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(3)
+                    .font(.system(size: 10.5, design: .monospaced))
+                    .foregroundStyle(theme.body)
                     .textSelection(.enabled)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(8)
-                    .background(Color(nsColor: .textBackgroundColor))
-                    .clipShape(RoundedRectangle(cornerRadius: 6))
+                    .padding(12)
+                    .background(
+                        RoundedRectangle(cornerRadius: 9)
+                            .fill(theme.surface)
+                    )
+
+                HStack(spacing: 8) {
+                    Button("Choose Folder") {
+                        proxyInstaller.chooseGameFolder()
+                    }
+                    .buttonStyle(InstrumentButtonStyle(theme: theme))
+
+                    Button("Reveal") {
+                        proxyInstaller.revealGameFolder()
+                    }
+                    .buttonStyle(InstrumentButtonStyle(theme: theme))
+                    .disabled(proxyInstaller.gameFolderURL == nil)
+                }
             }
 
-            VStack(alignment: .leading, spacing: 8) {
-                Text("Executable")
-                    .font(.headline)
-
-                Label(proxyInstaller.exeText, systemImage: proxyInstaller.exeStatusIcon)
-                    .foregroundStyle(proxyInstaller.exeStatusColor)
+            section("EXECUTABLE") {
+                statusLine(
+                    text: proxyInstaller.exeText,
+                    colour: proxyInstaller.exeStatusColor
+                )
 
                 if !proxyInstaller.suggestedFolderText.isEmpty {
-                    HStack(alignment: .firstTextBaseline, spacing: 8) {
-                        Label(proxyInstaller.suggestedFolderText, systemImage: "arrow.turn.down.right")
-                            .font(.caption)
-                            .foregroundStyle(.orange)
+                    HStack(alignment: .firstTextBaseline, spacing: 10) {
+                        Text(proxyInstaller.suggestedFolderText)
+                            .font(.system(size: 11))
+                            .foregroundStyle(theme.warning)
+                            .fixedSize(horizontal: false, vertical: true)
 
                         Button("Use That Folder") {
                             proxyInstaller.useSuggestedFolder()
                         }
-                        .controlSize(.small)
+                        .buttonStyle(InstrumentButtonStyle(theme: theme))
                     }
                 }
             }
 
-            VStack(alignment: .leading, spacing: 8) {
-                Text("Proxy")
-                    .font(.headline)
-
-                Label(proxyInstaller.proxyStatusText, systemImage: proxyInstaller.proxyStatusIcon)
-                    .foregroundStyle(proxyInstaller.proxyStatusColor)
+            section("PROXY") {
+                statusLine(
+                    text: proxyInstaller.proxyStatusText,
+                    colour: proxyInstaller.proxyStatusColor
+                )
 
                 if !proxyInstaller.lastActionText.isEmpty {
                     Text(proxyInstaller.lastActionText)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .font(.system(size: 11))
+                        .foregroundStyle(theme.dim)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
+            }
+        }
+        .padding(20)
+    }
 
-                Divider()
-
-                Toggle("Detailed proxy log", isOn: Binding(
+    private var rightColumn: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            section("DETAILED PROXY LOG") {
+                Toggle(isOn: Binding(
                     get: { proxyInstaller.isVerboseLogEnabled },
                     set: { proxyInstaller.setVerboseLog($0) }
-                ))
+                )) {
+                    Text(proxyInstaller.isVerboseLogEnabled ? "On" : "Off")
+                        .font(.system(size: 12.5))
+                        .foregroundStyle(theme.body)
+                }
+                .toggleStyle(.switch)
+                .tint(theme.accent)
                 .disabled(proxyInstaller.gameFolderURL == nil)
 
-                Text(proxyInstaller.isVerboseLogEnabled
-                     ? "Logs every force feedback event, which grows by tens of megabytes per session. Takes effect when the game restarts. \(proxyInstaller.verboseLogDetailText)"
-                     : "Only startup and errors are logged. Turn this on to diagnose a problem, then turn it back off. \(proxyInstaller.verboseLogDetailText)")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                Text(verboseLogCaption)
+                    .font(.system(size: 11))
+                    .foregroundStyle(theme.dim)
                     .fixedSize(horizontal: false, vertical: true)
             }
 
             VStack(alignment: .leading, spacing: 8) {
                 HStack {
-                    Text("Install History")
-                        .font(.headline)
+                    caption("INSTALL HISTORY")
 
                     Spacer()
 
-                    Button("Clear History") {
+                    Button("Clear") {
                         proxyInstaller.clearHistory()
                     }
+                    .buttonStyle(.plain)
+                    .font(.system(size: 11))
+                    .foregroundStyle(theme.dim)
                 }
 
                 ScrollView {
                     Text(proxyInstaller.historyDisplayText)
-                        .font(.system(size: 11, design: .monospaced))
-                        .foregroundStyle(.secondary)
+                        .font(.system(size: 10, design: .monospaced))
+                        .foregroundStyle(theme.dim)
                         .textSelection(.enabled)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(8)
                 }
-                .frame(height: 100)
-                .background(Color(nsColor: .textBackgroundColor))
-                .clipShape(RoundedRectangle(cornerRadius: 6))
+                .frame(maxHeight: 150)
             }
+        }
+        .padding(20)
+    }
+
+    private var verboseLogCaption: String {
+        let state = proxyInstaller.isVerboseLogEnabled
+            ? "Logs every force feedback event, which grows by tens of megabytes per session. Takes effect when the game restarts."
+            : "Only startup and errors are logged. Turn this on to diagnose a problem, then turn it back off."
+
+        return "\(state) \(proxyInstaller.verboseLogDetailText)"
+    }
+
+    private var footer: some View {
+        HStack(spacing: 8) {
+            Text("Made by Matteo Seminara & Maurizio Seminara")
+                .font(.system(size: 11))
+                .foregroundStyle(theme.dim)
 
             Spacer()
 
-            Divider()
-
-            HStack {
-                Text("Made by Matteo Seminara & Maurizio Seminara")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-
-                Spacer()
-
-                Button("Install Proxy") {
-                    proxyInstaller.installProxy()
-                }
-                .disabled(!proxyInstaller.canInstallProxy)
-
-                Button("Remove Proxy") {
-                    proxyInstaller.removeProxy()
-                }
-                .disabled(!proxyInstaller.canRemoveProxy)
-
-                Button("Refresh") {
-                    proxyInstaller.refreshStatus()
-                }
-                .disabled(proxyInstaller.gameFolderURL == nil)
-
-                Button("Reveal Folder") {
-                    proxyInstaller.revealGameFolder()
-                }
-                .disabled(proxyInstaller.gameFolderURL == nil)
-
-                Button("Close") {
-                    NSApp.keyWindow?.close()
-                }
-                .keyboardShortcut(.cancelAction)
+            Button("Remove") {
+                proxyInstaller.removeProxy()
             }
+            .buttonStyle(InstrumentButtonStyle(theme: theme))
+            .disabled(!proxyInstaller.canRemoveProxy)
+
+            Button("Refresh") {
+                proxyInstaller.refreshStatus()
+            }
+            .buttonStyle(InstrumentButtonStyle(theme: theme))
+
+            Button("Close") {
+                NSApp.keyWindow?.close()
+            }
+            .buttonStyle(InstrumentButtonStyle(theme: theme))
+
+            Button("Install Proxy") {
+                proxyInstaller.installProxy()
+            }
+            .buttonStyle(InstrumentButtonStyle(theme: theme, isProminent: true))
+            .disabled(!proxyInstaller.canInstallProxy)
         }
-        .padding(24)
-        .frame(minWidth: 760, minHeight: 580)
-        .onAppear {
-            proxyInstaller.refreshStatus()
+        .padding(.horizontal, 20)
+        .padding(.vertical, 14)
+    }
+
+    @ViewBuilder
+    private func section<Content: View>(
+        _ title: String,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            caption(title)
+            content()
+        }
+    }
+
+    private func caption(_ text: String) -> some View {
+        Text(text)
+            .font(.system(size: 12, weight: .semibold))
+            .tracking(1.4)
+            .foregroundStyle(theme.label)
+    }
+
+    private func statusLine(text: String, colour: Color) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 9) {
+            Circle()
+                .fill(colour)
+                .frame(width: 7, height: 7)
+                .offset(y: -1)
+
+            Text(text)
+                .font(.system(size: 12.5))
+                .foregroundStyle(theme.body)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 }
