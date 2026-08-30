@@ -36,7 +36,6 @@ AuthKey_*.p8
 # Local release folders
 CrossFFB-Release/
 dmg-src/
-dmg-background.png
 
 # Logs
 *.log

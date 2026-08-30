@@ -103,11 +103,21 @@ xcodebuild \
     -exportOptionsPlist "${EXPORT_OPTIONS}"
 
 APP_PATH="${EXPORT_PATH}/CrossFFB.app"
+STAGING_PATH="${OUTPUT_DIR}/dmg-root"
+BACKGROUND_PATH="${REPO_ROOT}/packaging/dmg-background.png"
+DMG_README_PATH="${REPO_ROOT}/packaging/DMG-README.txt"
 
 echo "make_release: verifying the exported app"
 codesign --verify --deep --strict --verbose=2 "${APP_PATH}"
 lipo -archs "${APP_PATH}/Contents/MacOS/CrossFFB"
 lipo -archs "${APP_PATH}/Contents/Resources/g29_ffb_bridge"
+
+# The disk image carries a short read-me beside the app, so its contents live
+# in a folder of their own rather than being just the bundle.
+rm -rf "${STAGING_PATH}"
+mkdir -p "${STAGING_PATH}"
+cp -R "${APP_PATH}" "${STAGING_PATH}/CrossFFB.app"
+cp "${DMG_README_PATH}" "${STAGING_PATH}/README.txt"
 
 # create-dmg arranges the window through Finder, over Apple Events. The first
 # run from a given terminal raises a permission prompt; without it the layout
@@ -118,17 +128,20 @@ cleanup_scratch_images() {
 
 trap cleanup_scratch_images EXIT
 
-# The DMG layout below is the one that was accepted for 1.0.0.
+# The layout below is the one that was accepted for 1.0.0: app on the left,
+# Applications on the right, the read-me underneath the arrow.
 if ! create-dmg \
     --volname "CrossFFB" \
+    --background "${BACKGROUND_PATH}" \
     --window-pos 200 120 \
     --window-size 600 520 \
     --icon-size 100 \
     --icon "CrossFFB.app" 170 130 \
     --app-drop-link 430 130 \
+    --icon "README.txt" 300 305 \
     --no-internet-enable \
     "${DMG_PATH}" \
-    "${APP_PATH}"
+    "${STAGING_PATH}"
 then
     echo >&2
     echo "error: create-dmg could not lay the window out." >&2
