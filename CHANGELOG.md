@@ -21,14 +21,18 @@ All notable changes to CrossFFB are documented here.
   things between a fresh install and force feedback, each row reading real
   state. The Wine override row hands over the line to paste and turns green once
   a game has reached the bridge, which proves the override took.
+- The Windows proxy no longer writes a trace line per force feedback event. It
+  had grown to gigabytes in a game folder and wrote to disk from the thread
+  delivering force feedback. Startup and errors are still logged.
+- The app and the native helper are built as universal binaries.
 
 ### Added
 
 - Damper support. Assetto Corsa Competizione asks for a condition damper
   alongside the constant force and updates it while driving; the bridge used to
-  drop those messages. It now drives the wheel's damper, and the menu bar has a
-  checkbox and a strength slider for it. Euro Truck Simulator 2 does not use
-  this effect, so nothing changes there.
+  drop those messages. It now drives the wheel's damper, and the panel has a
+  control for its strength. Euro Truck Simulator 2 does not use this effect, so
+  nothing changes there.
 - Setup reports the architecture of every executable it finds and warns when a
   folder holds no 64-bit executable.
 - Setup recognises the Unreal Engine layout and offers to switch to
@@ -36,13 +40,6 @@ All notable changes to CrossFFB are documented here.
   actually loads the proxy from.
 - A **Detailed proxy log** toggle in Setup, and the `CROSSFFB_PROXY_LOG`
   environment variable for the same purpose.
-
-### Changed
-
-- The Windows proxy no longer writes a trace line per force feedback event. It
-  had grown to gigabytes in a game folder and wrote to disk from the thread
-  delivering force feedback. Startup and errors are still logged.
-- The app and the native helper are built as universal binaries.
 
 ### Fixed
 
