@@ -20,7 +20,7 @@
       "blur-material" : null,
       "layers" : [
         {
-          "glass" : true,
+          "glass" : false,
           "image-name" : "Progetto senza titolo 3.svg",
           "name" : "Progetto senza titolo 3"
         }
@@ -31,7 +31,7 @@
         "opacity" : 0.5
       },
       "translucency" : {
-        "enabled" : true,
+        "enabled" : false,
         "value" : 0.5
       }
     },
