@@ -109,8 +109,17 @@ codesign --verify --deep --strict --verbose=2 "${APP_PATH}"
 lipo -archs "${APP_PATH}/Contents/MacOS/CrossFFB"
 lipo -archs "${APP_PATH}/Contents/Resources/g29_ffb_bridge"
 
+# create-dmg arranges the window through Finder, over Apple Events. The first
+# run from a given terminal raises a permission prompt; without it the layout
+# step fails and leaves a large read-write image behind.
+cleanup_scratch_images() {
+    rm -f "${OUTPUT_DIR}"/rw.*.dmg
+}
+
+trap cleanup_scratch_images EXIT
+
 # The DMG layout below is the one that was accepted for 1.0.0.
-create-dmg \
+if ! create-dmg \
     --volname "CrossFFB" \
     --window-pos 200 120 \
     --window-size 600 520 \
@@ -120,6 +129,14 @@ create-dmg \
     --no-internet-enable \
     "${DMG_PATH}" \
     "${APP_PATH}"
+then
+    echo >&2
+    echo "error: create-dmg could not lay the window out." >&2
+    echo "       It drives Finder over Apple Events, which needs permission." >&2
+    echo "       Run this script from a terminal and allow the prompt, or grant" >&2
+    echo "       it under System Settings > Privacy & Security > Automation." >&2
+    exit 1
+fi
 
 echo "make_release: signing the disk image"
 codesign --force --timestamp --sign "${SIGN_IDENTITY}" "${DMG_PATH}"
