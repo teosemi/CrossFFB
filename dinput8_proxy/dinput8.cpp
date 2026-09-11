@@ -358,23 +358,28 @@ static bool load_real_dinput8()
 }
 
 
+#define PROXY_HELLO_LINE "HELLO source=dinput8_proxy step18"
+
 static SOCKET g_tcpSocket = INVALID_SOCKET;
 static bool g_wsaStarted = false;
 static bool g_tcpConnectAttempted = false;
 
-static bool tcp_connect_once()
+// Bumped on every new connection, so a thread holding an old socket value
+// never closes a newer connection that happens to reuse the same handle.
+static LONG g_tcpGeneration = 0;
+
+// The bridge socket is shared by the game threads sending force feedback and,
+// when the virtual G29 is in use, the thread reading wheel input back.
+static CRITICAL_SECTION g_tcpLock;
+
+// Caller holds g_tcpLock. The reader thread retries every second, so it asks
+// for quiet failures instead of a log line per attempt.
+static bool tcp_connect_locked(bool quiet)
 {
     if (g_tcpSocket != INVALID_SOCKET)
     {
         return true;
     }
-
-    if (g_tcpConnectAttempted)
-    {
-        return false;
-    }
-
-    g_tcpConnectAttempted = true;
 
     if (!g_wsaStarted)
     {
@@ -405,25 +410,75 @@ static bool tcp_connect_once()
     addr.sin_port = htons(54321);
     addr.sin_addr.s_addr = inet_addr("127.0.0.1");
 
-    log_line("TCP connecting to 127.0.0.1:54321");
+    if (!quiet)
+    {
+        log_line("TCP connecting to 127.0.0.1:54321");
+    }
 
     int rc = connect(s, (sockaddr*)&addr, sizeof(addr));
 
     if (rc == SOCKET_ERROR)
     {
-        log_line("TCP connect failed error=%d", WSAGetLastError());
+        if (!quiet)
+        {
+            log_line("TCP connect failed error=%d", WSAGetLastError());
+        }
+
         closesocket(s);
         return false;
     }
 
     g_tcpSocket = s;
+    g_tcpGeneration++;
 
-    log_line("TCP connected to 127.0.0.1:54321");
+    log_line("TCP connected to 127.0.0.1:54321 generation=%ld", (long)g_tcpGeneration);
+    return true;
+}
+
+// Caller holds g_tcpLock.
+static bool tcp_connect_once()
+{
+    if (g_tcpSocket != INVALID_SOCKET)
+    {
+        return true;
+    }
+
+    if (g_tcpConnectAttempted)
+    {
+        return false;
+    }
+
+    g_tcpConnectAttempted = true;
+
+    return tcp_connect_locked(false);
+}
+
+// Caller holds g_tcpLock.
+static bool tcp_send_raw_locked(const char* line, int len)
+{
+    if (g_tcpSocket == INVALID_SOCKET)
+    {
+        return false;
+    }
+
+    int sent = send(g_tcpSocket, line, len, 0);
+
+    if (sent == SOCKET_ERROR)
+    {
+        log_line("TCP send failed error=%d", WSAGetLastError());
+        closesocket(g_tcpSocket);
+        g_tcpSocket = INVALID_SOCKET;
+        g_tcpConnectAttempted = false;
+        return false;
+    }
+
     return true;
 }
 
 static void tcp_close()
 {
+    EnterCriticalSection(&g_tcpLock);
+
     if (g_tcpSocket != INVALID_SOCKET)
     {
         log_line("TCP closing socket");
@@ -438,15 +493,12 @@ static void tcp_close()
     }
 
     g_tcpConnectAttempted = false;
+
+    LeaveCriticalSection(&g_tcpLock);
 }
 
 static void tcp_send_line(const char* fmt, ...)
 {
-    if (!tcp_connect_once())
-    {
-        return;
-    }
-
     char line[1024];
 
     va_list args;
@@ -462,19 +514,271 @@ static void tcp_send_line(const char* fmt, ...)
     line[sizeof(line) - 3] = '\0';
     lstrcatA(line, "\n");
 
-    int len = (int)strlen(line);
-    int sent = send(g_tcpSocket, line, len, 0);
+    EnterCriticalSection(&g_tcpLock);
 
-    if (sent == SOCKET_ERROR)
+    bool sent = tcp_connect_once() && tcp_send_raw_locked(line, (int)strlen(line));
+
+    LeaveCriticalSection(&g_tcpLock);
+
+    if (sent)
     {
-        log_line("TCP send failed error=%d", WSAGetLastError());
-        closesocket(g_tcpSocket);
-        g_tcpSocket = INVALID_SOCKET;
-        g_tcpConnectAttempted = false;
+        log_verbose("TCP sent: %s", line);
+    }
+}
+
+/*
+    Wheel input for the virtual G29.
+
+    Since macOS 27 Wine no longer enumerates the G29, so the game would see
+    neither the wheel nor its force feedback. The bridge reads the wheel
+    through IOHID and, after INPUT_SUBSCRIBE, streams one line per change:
+
+        STATE x=32705 y=255 z=255 rz=255 hat=8 buttons=0x0000000
+
+    Raw HID values: X is the 16-bit steering axis, Y/Z/Rz are the 8-bit
+    pedals (255 when released), hat is 0-7 or 8 when centred.
+*/
+#define WHEEL_AXIS_COUNT 4
+#define WHEEL_BUTTON_COUNT 25
+#define WHEEL_HAT_CENTERED 8
+#define BRIDGE_RETRY_MS 1000
+
+struct WheelInput
+{
+    LONG axes[WHEEL_AXIS_COUNT];   // X, Y, Z, Rz
+    DWORD hat;
+    DWORD buttons;
+};
+
+// Pedals released, wheel centred, nothing pressed. Used whenever the bridge
+// is unreachable, so a lost connection never leaves the throttle held down.
+static const WheelInput kNeutralWheelInput = {{32768, 255, 255, 255}, WHEEL_HAT_CENTERED, 0};
+
+static CRITICAL_SECTION g_inputLock;
+static WheelInput g_wheelInput = kNeutralWheelInput;
+static bool g_bridgeInputLive = false;
+static LONG g_readerStarted = 0;
+static DWORD g_inputSequence = 0;
+
+// Defined with the virtual device; called with g_inputLock held.
+static void virtual_devices_input_changed_locked(const WheelInput& before, const WheelInput& after);
+
+static void input_apply(const WheelInput& next, bool live)
+{
+    EnterCriticalSection(&g_inputLock);
+
+    WheelInput before = g_wheelInput;
+    bool wasLive = g_bridgeInputLive;
+
+    g_wheelInput = next;
+    g_bridgeInputLive = live;
+
+    if (memcmp(&before, &next, sizeof(next)) != 0)
+    {
+        virtual_devices_input_changed_locked(before, next);
+    }
+
+    LeaveCriticalSection(&g_inputLock);
+
+    if (live && !wasLive)
+    {
+        log_line(
+            "Bridge input live x=%ld y=%ld z=%ld rz=%ld hat=%lu buttons=0x%07lx",
+            (long)next.axes[0],
+            (long)next.axes[1],
+            (long)next.axes[2],
+            (long)next.axes[3],
+            (unsigned long)next.hat,
+            (unsigned long)next.buttons
+        );
+    }
+    else if (!live && wasLive)
+    {
+        log_line("Bridge input lost, wheel state set to neutral");
+    }
+}
+
+static void input_handle_line(const char* line)
+{
+    unsigned x = 0, y = 0, z = 0, rz = 0, hat = 0, buttons = 0;
+
+    if (sscanf(line, "STATE x=%u y=%u z=%u rz=%u hat=%u buttons=0x%x", &x, &y, &z, &rz, &hat, &buttons) != 6)
+    {
+        log_line("Bridge sent unexpected line: %s", line);
         return;
     }
 
-    log_verbose("TCP sent: %s", line);
+    WheelInput next;
+    next.axes[0] = (LONG)x;
+    next.axes[1] = (LONG)y;
+    next.axes[2] = (LONG)z;
+    next.axes[3] = (LONG)rz;
+    next.hat = hat;
+    next.buttons = buttons;
+
+    input_apply(next, true);
+}
+
+static DWORD WINAPI bridge_reader_thread(LPVOID)
+{
+    char recvbuf[2048];
+    char line[512];
+    size_t lineLen = 0;
+    LONG subscribedGeneration = 0;
+    DWORD failedAttempts = 0;
+
+    log_line("Bridge reader thread started");
+
+    for (;;)
+    {
+        EnterCriticalSection(&g_tcpLock);
+
+        SOCKET s = g_tcpSocket;
+        LONG generation = g_tcpGeneration;
+
+        // Every connection, including one opened by tcp_send_line after a
+        // failed send, has to be subscribed before the bridge sends input.
+        if (s != INVALID_SOCKET && generation != subscribedGeneration)
+        {
+            static const char subscribe[] = PROXY_HELLO_LINE "\nINPUT_SUBSCRIBE\n";
+
+            if (tcp_send_raw_locked(subscribe, (int)(sizeof(subscribe) - 1)))
+            {
+                subscribedGeneration = generation;
+                log_line("Bridge input subscribed generation=%ld", (long)generation);
+            }
+            else
+            {
+                s = INVALID_SOCKET;
+            }
+        }
+
+        LeaveCriticalSection(&g_tcpLock);
+
+        if (s == INVALID_SOCKET)
+        {
+            input_apply(kNeutralWheelInput, false);
+            Sleep(BRIDGE_RETRY_MS);
+
+            EnterCriticalSection(&g_tcpLock);
+            bool connected = tcp_connect_locked(true);
+            LeaveCriticalSection(&g_tcpLock);
+
+            if (connected)
+            {
+                failedAttempts = 0;
+            }
+            else if ((failedAttempts++ % 30) == 0)
+            {
+                log_line("Bridge not reachable, retrying every %d ms", BRIDGE_RETRY_MS);
+            }
+
+            continue;
+        }
+
+        int n = recv(s, recvbuf, sizeof(recvbuf), 0);
+
+        if (n <= 0)
+        {
+            log_line("Bridge input connection closed recv=%d error=%d", n, n < 0 ? WSAGetLastError() : 0);
+
+            EnterCriticalSection(&g_tcpLock);
+
+            if (g_tcpSocket == s && g_tcpGeneration == generation)
+            {
+                closesocket(s);
+                g_tcpSocket = INVALID_SOCKET;
+                g_tcpConnectAttempted = false;
+            }
+
+            LeaveCriticalSection(&g_tcpLock);
+
+            input_apply(kNeutralWheelInput, false);
+            lineLen = 0;
+            continue;
+        }
+
+        for (int i = 0; i < n; ++i)
+        {
+            char c = recvbuf[i];
+
+            if (c == '\n')
+            {
+                line[lineLen] = '\0';
+
+                if (lineLen > 0 && line[lineLen - 1] == '\r')
+                {
+                    line[lineLen - 1] = '\0';
+                }
+
+                if (line[0] != '\0')
+                {
+                    input_handle_line(line);
+                }
+
+                lineLen = 0;
+            }
+            else if (lineLen + 1 < sizeof(line))
+            {
+                line[lineLen++] = c;
+            }
+            else
+            {
+                lineLen = 0;
+            }
+        }
+    }
+
+    return 0;
+}
+
+// Connects to the bridge if needed and starts the input reader once.
+// Returns whether the bridge answered, which is what decides whether the
+// virtual G29 is offered to the game.
+static bool bridge_input_start()
+{
+    EnterCriticalSection(&g_tcpLock);
+
+    // A failed attempt from an earlier call must not rule out this one: the
+    // bridge may have started in the meantime.
+    if (g_tcpSocket == INVALID_SOCKET)
+    {
+        g_tcpConnectAttempted = false;
+    }
+
+    bool connected = tcp_connect_once();
+
+    LeaveCriticalSection(&g_tcpLock);
+
+    if (!connected)
+    {
+        return false;
+    }
+
+    if (InterlockedCompareExchange(&g_readerStarted, 1, 0) == 0)
+    {
+        // The reader never exits, so the DLL must never be unloaded under it.
+        HMODULE self = NULL;
+        GetModuleHandleExA(
+            GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_PIN,
+            (LPCSTR)&bridge_reader_thread,
+            &self
+        );
+
+        HANDLE thread = CreateThread(NULL, 0, bridge_reader_thread, NULL, 0, NULL);
+
+        if (thread)
+        {
+            CloseHandle(thread);
+        }
+        else
+        {
+            log_line("Bridge reader CreateThread failed error=%lu", GetLastError());
+            InterlockedExchange(&g_readerStarted, 0);
+        }
+    }
+
+    return true;
 }
 
 class FakeDirectInputEffect : public IDirectInputEffect
@@ -746,6 +1050,156 @@ public:
     }
 };
 
+/*
+    Force feedback of the G29, shared by the proxy around Wine's device and by
+    the virtual G29. Wine reports no usable effects for the wheel, so these
+    expose only our fake effects, which the bridge turns into HID commands.
+*/
+static HRESULT g29_create_effect(REFGUID rguid, LPCDIEFFECT lpeff, LPDIRECTINPUTEFFECT* ppdeff)
+{
+    if (!ppdeff)
+    {
+        return DIERR_INVALIDPARAM;
+    }
+
+    *ppdeff = NULL;
+
+    if (
+        IsEqualGUID(rguid, GUID_ConstantForce) ||
+        IsEqualGUID(rguid, GUID_Spring) ||
+        IsEqualGUID(rguid, GUID_Damper) ||
+        IsEqualGUID(rguid, GUID_Friction) ||
+        IsEqualGUID(rguid, GUID_Inertia)
+    )
+    {
+        FakeDirectInputEffect* fakeEffect = new FakeDirectInputEffect(rguid);
+        *ppdeff = static_cast<IDirectInputEffect*>(fakeEffect);
+
+        if (lpeff)
+        {
+            fakeEffect->SetParameters(lpeff, DIEP_ALLPARAMS);
+        }
+
+        log_line("G29 CreateEffect returning fake effect=%p", *ppdeff);
+
+        tcp_send_line(
+            "CREATE_EFFECT name=%s",
+            effect_guid_to_string(rguid)
+        );
+
+        return DI_OK;
+    }
+
+    log_line("G29 CreateEffect unsupported fake guid -> DIERR_UNSUPPORTED");
+    return DIERR_UNSUPPORTED;
+}
+
+static HRESULT g29_enum_effects(LPDIENUMEFFECTSCALLBACKW lpCallback, LPVOID pvRef)
+{
+    /*
+        Step 11 clean:
+        For the G29 we do NOT call Wine's real EnumEffects anymore.
+        Wine reports no real FFB effects for this device.
+        We expose only our fake DirectInput effects to ETS2.
+    */
+    log_line("G29 EnumEffects clean fake-only mode active");
+
+    if (!lpCallback)
+    {
+        log_line("G29 EnumEffects no callback, returning DI_OK");
+        return DI_OK;
+    }
+
+    static const struct
+    {
+        const GUID* guid;
+        DWORD effType;
+        DWORD dynamicParams;
+        const WCHAR* name;
+    } effects[] = {
+        {&GUID_ConstantForce, DIEFT_CONSTANTFORCE, DIEP_TYPESPECIFICPARAMS | DIEP_DIRECTION | DIEP_GAIN, L"Constant Force"},
+        {&GUID_Spring, DIEFT_CONDITION, DIEP_TYPESPECIFICPARAMS | DIEP_GAIN, L"Spring"},
+        {&GUID_Damper, DIEFT_CONDITION, DIEP_TYPESPECIFICPARAMS | DIEP_GAIN, L"Damper"},
+        {&GUID_Friction, DIEFT_CONDITION, DIEP_TYPESPECIFICPARAMS | DIEP_GAIN, L"Friction"},
+    };
+
+    for (size_t i = 0; i < sizeof(effects) / sizeof(effects[0]); ++i)
+    {
+        DIEFFECTINFOW info;
+        ZeroMemory(&info, sizeof(info));
+        info.dwSize = sizeof(info);
+        info.guid = *effects[i].guid;
+        info.dwEffType = effects[i].effType;
+        info.dwStaticParams = DIEP_TYPESPECIFICPARAMS | DIEP_DIRECTION | DIEP_DURATION | DIEP_GAIN | DIEP_AXES;
+        info.dwDynamicParams = effects[i].dynamicParams;
+        lstrcpynW(info.tszName, effects[i].name, MAX_PATH);
+
+        log_line("G29 EnumEffects emitting fake %s", effect_guid_to_string(info.guid));
+
+        if (lpCallback(&info, pvRef) == DIENUM_STOP)
+        {
+            return DI_OK;
+        }
+    }
+
+    return DI_OK;
+}
+
+static HRESULT g29_get_effect_info(LPDIEFFECTINFOW pdei, REFGUID rguid)
+{
+    if (!pdei)
+    {
+        return DIERR_INVALIDPARAM;
+    }
+
+    DWORD originalSize = pdei->dwSize;
+    ZeroMemory(pdei, sizeof(*pdei));
+    pdei->dwSize = originalSize ? originalSize : sizeof(*pdei);
+    pdei->guid = rguid;
+    pdei->dwStaticParams = DIEP_TYPESPECIFICPARAMS | DIEP_DIRECTION | DIEP_DURATION | DIEP_GAIN | DIEP_AXES;
+    pdei->dwDynamicParams = DIEP_TYPESPECIFICPARAMS | DIEP_DIRECTION | DIEP_GAIN;
+
+    if (IsEqualGUID(rguid, GUID_ConstantForce))
+    {
+        pdei->dwEffType = DIEFT_CONSTANTFORCE;
+        lstrcpynW(pdei->tszName, L"Constant Force", MAX_PATH);
+        return DI_OK;
+    }
+
+    if (IsEqualGUID(rguid, GUID_Spring))
+    {
+        pdei->dwEffType = DIEFT_CONDITION;
+        lstrcpynW(pdei->tszName, L"Spring", MAX_PATH);
+        return DI_OK;
+    }
+
+    if (IsEqualGUID(rguid, GUID_Damper))
+    {
+        pdei->dwEffType = DIEFT_CONDITION;
+        lstrcpynW(pdei->tszName, L"Damper", MAX_PATH);
+        return DI_OK;
+    }
+
+    if (IsEqualGUID(rguid, GUID_Friction))
+    {
+        pdei->dwEffType = DIEFT_CONDITION;
+        lstrcpynW(pdei->tszName, L"Friction", MAX_PATH);
+        return DI_OK;
+    }
+
+    return DIERR_UNSUPPORTED;
+}
+
+static HRESULT g29_send_force_feedback_command(DWORD dwFlags)
+{
+    tcp_send_line(
+        "FF_COMMAND flags=0x%08lx",
+        (unsigned long)dwFlags
+    );
+
+    return DI_OK;
+}
+
 
 struct EnumObjectsFFContext
 {
@@ -997,7 +1451,7 @@ public:
 
         if (m_isG29 && SUCCEEDED(hr))
         {
-            tcp_send_line("HELLO source=dinput8_proxy step17");
+            tcp_send_line(PROXY_HELLO_LINE);
             tcp_send_line("ACQUIRE");
         }
 
@@ -1168,41 +1622,7 @@ public:
 
         if (m_isG29)
         {
-            if (!ppdeff)
-            {
-                return DIERR_INVALIDPARAM;
-            }
-
-            *ppdeff = NULL;
-
-            if (
-                IsEqualGUID(rguid, GUID_ConstantForce) ||
-                IsEqualGUID(rguid, GUID_Spring) ||
-                IsEqualGUID(rguid, GUID_Damper) ||
-                IsEqualGUID(rguid, GUID_Friction) ||
-                IsEqualGUID(rguid, GUID_Inertia)
-            )
-            {
-                FakeDirectInputEffect* fakeEffect = new FakeDirectInputEffect(rguid);
-                *ppdeff = static_cast<IDirectInputEffect*>(fakeEffect);
-
-                if (lpeff)
-                {
-                    fakeEffect->SetParameters(lpeff, DIEP_ALLPARAMS);
-                }
-
-                log_line("DeviceProxy::CreateEffect returning fake effect=%p", *ppdeff);
-
-                tcp_send_line(
-                    "CREATE_EFFECT name=%s",
-                    effect_guid_to_string(rguid)
-                );
-
-                return DI_OK;
-            }
-
-            log_line("DeviceProxy::CreateEffect unsupported fake guid -> DIERR_UNSUPPORTED");
-            return DIERR_UNSUPPORTED;
+            return g29_create_effect(rguid, lpeff, ppdeff);
         }
 
         HRESULT hr = m_real->CreateEffect(rguid, lpeff, ppdeff, punkOuter);
@@ -1234,83 +1654,7 @@ public:
             return hr;
         }
 
-        /*
-            Step 11 clean:
-            For the G29 we do NOT call Wine's real EnumEffects anymore.
-            Wine reports no real FFB effects for this device.
-            We expose only our fake DirectInput effects to ETS2.
-        */
-        log_line("DeviceProxy::EnumEffects G29 clean fake-only mode active");
-
-        if (!lpCallback)
-        {
-            log_line("DeviceProxy::EnumEffects no callback, returning DI_OK");
-            return DI_OK;
-        }
-
-        DIEFFECTINFOW info;
-        ZeroMemory(&info, sizeof(info));
-        info.dwSize = sizeof(info);
-
-        info.guid = GUID_ConstantForce;
-        info.dwEffType = DIEFT_CONSTANTFORCE;
-        info.dwStaticParams = DIEP_TYPESPECIFICPARAMS | DIEP_DIRECTION | DIEP_DURATION | DIEP_GAIN | DIEP_AXES;
-        info.dwDynamicParams = DIEP_TYPESPECIFICPARAMS | DIEP_DIRECTION | DIEP_GAIN;
-        lstrcpynW(info.tszName, L"Constant Force", MAX_PATH);
-
-        log_line("DeviceProxy::EnumEffects emitting fake GUID_ConstantForce");
-
-        if (lpCallback(&info, pvRef) == DIENUM_STOP)
-        {
-            return DI_OK;
-        }
-
-        ZeroMemory(&info, sizeof(info));
-        info.dwSize = sizeof(info);
-        info.guid = GUID_Spring;
-        info.dwEffType = DIEFT_CONDITION;
-        info.dwStaticParams = DIEP_TYPESPECIFICPARAMS | DIEP_DIRECTION | DIEP_DURATION | DIEP_GAIN | DIEP_AXES;
-        info.dwDynamicParams = DIEP_TYPESPECIFICPARAMS | DIEP_GAIN;
-        lstrcpynW(info.tszName, L"Spring", MAX_PATH);
-
-        log_line("DeviceProxy::EnumEffects emitting fake GUID_Spring");
-
-        if (lpCallback(&info, pvRef) == DIENUM_STOP)
-        {
-            return DI_OK;
-        }
-
-        ZeroMemory(&info, sizeof(info));
-        info.dwSize = sizeof(info);
-        info.guid = GUID_Damper;
-        info.dwEffType = DIEFT_CONDITION;
-        info.dwStaticParams = DIEP_TYPESPECIFICPARAMS | DIEP_DIRECTION | DIEP_DURATION | DIEP_GAIN | DIEP_AXES;
-        info.dwDynamicParams = DIEP_TYPESPECIFICPARAMS | DIEP_GAIN;
-        lstrcpynW(info.tszName, L"Damper", MAX_PATH);
-
-        log_line("DeviceProxy::EnumEffects emitting fake GUID_Damper");
-
-        if (lpCallback(&info, pvRef) == DIENUM_STOP)
-        {
-            return DI_OK;
-        }
-
-        ZeroMemory(&info, sizeof(info));
-        info.dwSize = sizeof(info);
-        info.guid = GUID_Friction;
-        info.dwEffType = DIEFT_CONDITION;
-        info.dwStaticParams = DIEP_TYPESPECIFICPARAMS | DIEP_DIRECTION | DIEP_DURATION | DIEP_GAIN | DIEP_AXES;
-        info.dwDynamicParams = DIEP_TYPESPECIFICPARAMS | DIEP_GAIN;
-        lstrcpynW(info.tszName, L"Friction", MAX_PATH);
-
-        log_line("DeviceProxy::EnumEffects emitting fake GUID_Friction");
-
-        if (lpCallback(&info, pvRef) == DIENUM_STOP)
-        {
-            return DI_OK;
-        }
-
-        return DI_OK;
+        return g29_enum_effects(lpCallback, pvRef);
     }
 
     HRESULT STDMETHODCALLTYPE GetEffectInfo(LPDIEFFECTINFOW pdei, REFGUID rguid)
@@ -1328,47 +1672,7 @@ public:
 
         if (m_isG29)
         {
-            if (!pdei)
-            {
-                return DIERR_INVALIDPARAM;
-            }
-
-            DWORD originalSize = pdei->dwSize;
-            ZeroMemory(pdei, sizeof(*pdei));
-            pdei->dwSize = originalSize ? originalSize : sizeof(*pdei);
-            pdei->guid = rguid;
-            pdei->dwStaticParams = DIEP_TYPESPECIFICPARAMS | DIEP_DIRECTION | DIEP_DURATION | DIEP_GAIN | DIEP_AXES;
-            pdei->dwDynamicParams = DIEP_TYPESPECIFICPARAMS | DIEP_DIRECTION | DIEP_GAIN;
-
-            if (IsEqualGUID(rguid, GUID_ConstantForce))
-            {
-                pdei->dwEffType = DIEFT_CONSTANTFORCE;
-                lstrcpynW(pdei->tszName, L"Constant Force", MAX_PATH);
-                return DI_OK;
-            }
-
-            if (IsEqualGUID(rguid, GUID_Spring))
-            {
-                pdei->dwEffType = DIEFT_CONDITION;
-                lstrcpynW(pdei->tszName, L"Spring", MAX_PATH);
-                return DI_OK;
-            }
-
-            if (IsEqualGUID(rguid, GUID_Damper))
-            {
-                pdei->dwEffType = DIEFT_CONDITION;
-                lstrcpynW(pdei->tszName, L"Damper", MAX_PATH);
-                return DI_OK;
-            }
-
-            if (IsEqualGUID(rguid, GUID_Friction))
-            {
-                pdei->dwEffType = DIEFT_CONDITION;
-                lstrcpynW(pdei->tszName, L"Friction", MAX_PATH);
-                return DI_OK;
-            }
-
-            return DIERR_UNSUPPORTED;
+            return g29_get_effect_info(pdei, rguid);
         }
 
         HRESULT hr = m_real->GetEffectInfo(pdei, rguid);
@@ -1408,12 +1712,7 @@ public:
 
         if (m_isG29)
         {
-            tcp_send_line(
-                "FF_COMMAND flags=0x%08lx",
-                (unsigned long)dwFlags
-            );
-
-            return DI_OK;
+            return g29_send_force_feedback_command(dwFlags);
         }
 
         HRESULT hr = m_real->SendForceFeedbackCommand(dwFlags);
@@ -1491,12 +1790,1494 @@ public:
     }
 };
 
+/*
+    Virtual G29.
+
+    Offered by EnumDevices only when Wine enumerated no G29 and the bridge
+    answers. It carries the identity Wine used to report for the wheel, so
+    games keep recognising it, while the objects follow what Windows builds
+    from the G29 HID descriptor: X steering, Y/Z/Rz pedals, one hat, 25
+    buttons. Raw values pass through unchanged, as on Windows.
+*/
+static const GUID kWineG29InstanceGuid =
+    {0x9E573EDF, 0x7734, 0x11D2, {0x8D, 0x4A, 0x23, 0x90, 0x3F, 0xB6, 0xBD, 0xF7}};
+
+// Used instead when Wine has already given the GUID above to another device.
+static const GUID kCrossFFBInstanceGuid =
+    {0xC24F046D, 0xF00D, 0x0002, {0x90, 0x29, 0x56, 0x49, 0x52, 0x54, 0x55, 0x41}};
+
+static const GUID kG29ProductGuid =
+    {0xC24F046D, 0x0000, 0x0000, {0x00, 0x00, 'P', 'I', 'D', 'V', 'I', 'D'}};
+
+/*
+    Step 13: a stable fake non-null guidFFDriver. It does not need to
+    correspond to a real Windows FF driver, because CreateEffect is handled
+    by the proxy.
+*/
+static const GUID kG29FFDriverGuid =
+    {0xC24F046D, 0xF00D, 0x0001, {0x90, 0x29, 0x47, 0x32, 0x39, 0x46, 0x46, 0x42}};
+
+static const GUID kHIDClassGuid =
+    {0x745A17A0, 0x74D3, 0x11D0, {0xB6, 0xFE, 0x00, 0xA0, 0xC9, 0x0F, 0x57, 0xDA}};
+
+#define G29_VENDOR_ID 0x046D
+#define G29_PRODUCT_ID 0xC24F
+#define G29_DEVICE_TYPE 0x00010116   // DRIVING, as Wine reported the G29
+#define G29_PRODUCT_NAME L"Logitech G29 Driving Force Racing Wheel"
+#define G29_TYPE_NAME L"VID_046D&PID_C24F"
+#define G29_DEVICE_PATH L"\\\\?\\hid#vid_046d&pid_c24f#crossffb&0&0000#{4d1e55b2-f16f-11cf-88cb-001111000030}"
+
+#define VIRTUAL_OBJECT_COUNT (WHEEL_AXIS_COUNT + 1 + WHEEL_BUTTON_COUNT)
+#define VIRTUAL_MAX_DEVICES 8
+#define VIRTUAL_MAX_BUFFER 8192
+#define VIRTUAL_MAX_EXTRA_POVS 8
+#define VIRTUAL_STATE_LOG_EVERY 3600
+
+// Predefined DirectInput properties are small integers disguised as GUID
+// references and must be compared by address, never dereferenced.
+#define DIPROP_ID(ref) ((ULONG_PTR)&(ref))
+
+static GUID g_virtualInstanceGuid = kWineG29InstanceGuid;
+static bool g_virtualGuidChosen = false;
+static bool g_virtualOffered = false;
+static bool g_realG29Seen = false;
+
+enum VirtualObjectKind
+{
+    VOBJ_AXIS,
+    VOBJ_POV,
+    VOBJ_BUTTON
+};
+
+struct VirtualObject
+{
+    VirtualObjectKind kind;
+    int index;              // axis 0-3 or button 0-24
+    const GUID* guidType;
+    DWORD type;
+    DWORD flags;
+    WORD usagePage;
+    WORD usage;
+    DWORD nativeOffset;     // offset in c_dfDIJoystick2
+    LONG logicalMax;
+};
+
+struct VirtualObjectTable
+{
+    VirtualObject items[VIRTUAL_OBJECT_COUNT];
+
+    VirtualObjectTable()
+    {
+        static const GUID* const axisGuids[WHEEL_AXIS_COUNT] = {&GUID_XAxis, &GUID_YAxis, &GUID_ZAxis, &GUID_RzAxis};
+        static const WORD axisUsages[WHEEL_AXIS_COUNT] = {0x30, 0x31, 0x32, 0x35};
+        static const DWORD axisOffsets[WHEEL_AXIS_COUNT] = {DIJOFS_X, DIJOFS_Y, DIJOFS_Z, DIJOFS_RZ};
+        static const LONG axisMax[WHEEL_AXIS_COUNT] = {65535, 255, 255, 255};
+
+        int n = 0;
+
+        for (int i = 0; i < WHEEL_AXIS_COUNT; ++i, ++n)
+        {
+            // Every axis is an FF actuator, as Step 14/16 reported them.
+            items[n].kind = VOBJ_AXIS;
+            items[n].index = i;
+            items[n].guidType = axisGuids[i];
+            items[n].type = DIDFT_ABSAXIS | DIDFT_MAKEINSTANCE(i) | DIDFT_FFACTUATOR;
+            items[n].flags = DIDOI_ASPECTPOSITION | DIDOI_FFACTUATOR;
+            items[n].usagePage = 0x01;
+            items[n].usage = axisUsages[i];
+            items[n].nativeOffset = axisOffsets[i];
+            items[n].logicalMax = axisMax[i];
+        }
+
+        items[n].kind = VOBJ_POV;
+        items[n].index = 0;
+        items[n].guidType = &GUID_POV;
+        items[n].type = DIDFT_POV | DIDFT_MAKEINSTANCE(0);
+        items[n].flags = 0;
+        items[n].usagePage = 0x01;
+        items[n].usage = 0x39;
+        items[n].nativeOffset = DIJOFS_POV(0);
+        items[n].logicalMax = 7;
+        ++n;
+
+        for (int i = 0; i < WHEEL_BUTTON_COUNT; ++i, ++n)
+        {
+            items[n].kind = VOBJ_BUTTON;
+            items[n].index = i;
+            items[n].guidType = &GUID_Button;
+            items[n].type = DIDFT_PSHBUTTON | DIDFT_MAKEINSTANCE(i);
+            items[n].flags = 0;
+            items[n].usagePage = 0x09;
+            items[n].usage = (WORD)(i + 1);
+            items[n].nativeOffset = DIJOFS_BUTTON(i);
+            items[n].logicalMax = 1;
+        }
+    }
+};
+
+static const VirtualObject* virtual_objects()
+{
+    static const VirtualObjectTable table;
+    return table.items;
+}
+
+static void virtual_object_name(const VirtualObject& o, WCHAR* out, size_t count)
+{
+    static const WCHAR* const axisNames[WHEEL_AXIS_COUNT] = {L"X Axis", L"Y Axis", L"Z Axis", L"Z Rotation"};
+
+    switch (o.kind)
+    {
+        case VOBJ_AXIS:
+            lstrcpynW(out, axisNames[o.index], (int)count);
+            break;
+
+        case VOBJ_POV:
+            lstrcpynW(out, L"Hat Switch", (int)count);
+            break;
+
+        case VOBJ_BUTTON:
+            _snwprintf(out, count, L"Button %d", o.index);
+            out[count - 1] = L'\0';
+            break;
+    }
+}
+
+static HRESULT fill_object_instance(const VirtualObject& o, DWORD ofs, LPDIDEVICEOBJECTINSTANCEW out)
+{
+    DWORD size = out->dwSize;
+
+    if (size != sizeof(DIDEVICEOBJECTINSTANCEW) && size != sizeof(DIDEVICEOBJECTINSTANCE_DX3W))
+    {
+        return DIERR_INVALIDPARAM;
+    }
+
+    DIDEVICEOBJECTINSTANCEW full;
+    ZeroMemory(&full, sizeof(full));
+    full.dwSize = size;
+    full.guidType = *o.guidType;
+    full.dwOfs = ofs;
+    full.dwType = o.type;
+    full.dwFlags = o.flags;
+    virtual_object_name(o, full.tszName, MAX_PATH);
+    full.wUsagePage = o.usagePage;
+    full.wUsage = o.usage;
+
+    // The DX3 layout is a prefix of the full one.
+    memcpy(out, &full, size);
+    return DI_OK;
+}
+
+static HRESULT fill_virtual_instance(LPDIDEVICEINSTANCEW out)
+{
+    DWORD size = out->dwSize;
+
+    if (size != sizeof(DIDEVICEINSTANCEW) && size != sizeof(DIDEVICEINSTANCE_DX3W))
+    {
+        return DIERR_INVALIDPARAM;
+    }
+
+    DIDEVICEINSTANCEW full;
+    ZeroMemory(&full, sizeof(full));
+    full.dwSize = size;
+    full.guidInstance = g_virtualInstanceGuid;
+    full.guidProduct = kG29ProductGuid;
+    full.dwDevType = G29_DEVICE_TYPE;
+    lstrcpynW(full.tszInstanceName, G29_PRODUCT_NAME, MAX_PATH);
+    lstrcpynW(full.tszProductName, G29_PRODUCT_NAME, MAX_PATH);
+    full.guidFFDriver = kG29FFDriverGuid;
+    full.wUsagePage = 0x01;
+    full.wUsage = 0x04;
+
+    memcpy(out, &full, size);
+    return DI_OK;
+}
+
+static bool object_matches_enum_filter(const VirtualObject& o, DWORD flags)
+{
+    if (flags == DIDFT_ALL)
+    {
+        return true;
+    }
+
+    DWORD typeFilter = DIDFT_GETTYPE(flags);
+
+    if (typeFilter && !(typeFilter & DIDFT_GETTYPE(o.type)))
+    {
+        return false;
+    }
+
+    DWORD attrFilter = flags & (DIDFT_FFACTUATOR | DIDFT_FFEFFECTTRIGGER | DIDFT_OUTPUT | DIDFT_VENDORDEFINED | DIDFT_ALIAS);
+
+    return (o.type & attrFilter) == attrFilter;
+}
+
+// The same matching DirectInput applies to a DIOBJECTDATAFORMAT entry: GUID
+// when given, object type, and instance unless it is DIDFT_ANYINSTANCE.
+static bool object_matches_format(const VirtualObject& o, const DIOBJECTDATAFORMAT& od)
+{
+    if (od.pguid && !IsEqualGUID(*od.pguid, *o.guidType))
+    {
+        return false;
+    }
+
+    DWORD typeFilter = DIDFT_GETTYPE(od.dwType);
+
+    if (typeFilter && !(typeFilter & DIDFT_GETTYPE(o.type)))
+    {
+        return false;
+    }
+
+    WORD instance = DIDFT_GETINSTANCE(od.dwType);
+
+    if (instance != 0xFFFF && instance != DIDFT_GETINSTANCE(o.type))
+    {
+        return false;
+    }
+
+    if ((od.dwType & DIDFT_FFACTUATOR) && !(o.type & DIDFT_FFACTUATOR))
+    {
+        return false;
+    }
+
+    return true;
+}
+
+class VirtualG29Device;
+
+// Registered virtual devices, protected by g_inputLock.
+static VirtualG29Device* g_virtualDevices[VIRTUAL_MAX_DEVICES];
+
+class VirtualG29Device : public IDirectInputDevice8W
+{
+private:
+    LONG m_refs;
+
+    // Everything below is protected by g_inputLock: the reader thread
+    // queues buffered events while the game reads state.
+    bool m_acquired;
+    bool m_formatSet;
+    DWORD m_dataSize;
+    LONG m_userOffset[VIRTUAL_OBJECT_COUNT];
+    DWORD m_extraPovOffsets[VIRTUAL_MAX_EXTRA_POVS];
+    DWORD m_extraPovCount;
+    LONG m_rangeMin[WHEEL_AXIS_COUNT];
+    LONG m_rangeMax[WHEEL_AXIS_COUNT];
+    DWORD m_deadzone[WHEEL_AXIS_COUNT];
+    DWORD m_saturation[WHEEL_AXIS_COUNT];
+    DIDEVICEOBJECTDATA* m_buffer;
+    DWORD m_bufferSize;
+    DWORD m_bufferHead;
+    DWORD m_bufferCount;
+    bool m_overflow;
+    HANDLE m_event;
+    DWORD m_ffGain;
+    DWORD m_autocenter;
+    DWORD m_stateReads;
+
+    LONG axis_value_locked(int axis, LONG raw) const
+    {
+        LONG logicalMax = virtual_objects()[axis].logicalMax;
+
+        if (raw < 0)
+        {
+            raw = 0;
+        }
+
+        if (raw > logicalMax)
+        {
+            raw = logicalMax;
+        }
+
+        double t = (double)raw / (double)logicalMax;
+
+        DWORD deadzone = m_deadzone[axis];
+        DWORD saturation = m_saturation[axis];
+
+        // Dead zone and saturation apply around the centre of the axis.
+        if (deadzone > 0 || saturation < 10000)
+        {
+            double c = t * 2.0 - 1.0;
+            double a = c < 0.0 ? -c : c;
+            double d = deadzone / 10000.0;
+            double s = saturation / 10000.0;
+
+            if (a <= d)
+            {
+                a = 0.0;
+            }
+            else if (a >= s || s <= d)
+            {
+                a = 1.0;
+            }
+            else
+            {
+                a = (a - d) / (s - d);
+            }
+
+            c = c < 0.0 ? -a : a;
+            t = (c + 1.0) / 2.0;
+        }
+
+        double value = (double)m_rangeMin[axis] + t * ((double)m_rangeMax[axis] - (double)m_rangeMin[axis]);
+
+        return (LONG)(value < 0.0 ? value - 0.5 : value + 0.5);
+    }
+
+    DWORD object_data_locked(int i, const WheelInput& input) const
+    {
+        const VirtualObject& o = virtual_objects()[i];
+
+        switch (o.kind)
+        {
+            case VOBJ_AXIS:
+                return (DWORD)axis_value_locked(o.index, input.axes[o.index]);
+
+            case VOBJ_POV:
+                return input.hat < WHEEL_HAT_CENTERED ? input.hat * 4500 : 0xFFFFFFFF;
+
+            case VOBJ_BUTTON:
+                return ((input.buttons >> o.index) & 1) ? 0x80 : 0x00;
+        }
+
+        return 0;
+    }
+
+    static bool object_changed(int i, const WheelInput& before, const WheelInput& after)
+    {
+        const VirtualObject& o = virtual_objects()[i];
+
+        switch (o.kind)
+        {
+            case VOBJ_AXIS:
+                return before.axes[o.index] != after.axes[o.index];
+
+            case VOBJ_POV:
+                return before.hat != after.hat;
+
+            case VOBJ_BUTTON:
+                return ((before.buttons ^ after.buttons) >> o.index) & 1;
+        }
+
+        return false;
+    }
+
+    DWORD reported_offset_locked(int i) const
+    {
+        if (m_formatSet && m_userOffset[i] >= 0)
+        {
+            return (DWORD)m_userOffset[i];
+        }
+
+        return virtual_objects()[i].nativeOffset;
+    }
+
+    int find_object_locked(DWORD obj, DWORD how) const
+    {
+        const VirtualObject* objects = virtual_objects();
+
+        for (int i = 0; i < VIRTUAL_OBJECT_COUNT; ++i)
+        {
+            switch (how)
+            {
+                case DIPH_BYOFFSET:
+                    if (m_formatSet && m_userOffset[i] < 0)
+                    {
+                        continue;
+                    }
+
+                    if (reported_offset_locked(i) == obj)
+                    {
+                        return i;
+                    }
+                    break;
+
+                case DIPH_BYID:
+                    if ((DIDFT_GETTYPE(obj) & DIDFT_GETTYPE(objects[i].type)) &&
+                        DIDFT_GETINSTANCE(obj) == DIDFT_GETINSTANCE(objects[i].type))
+                    {
+                        return i;
+                    }
+                    break;
+
+                case DIPH_BYUSAGE:
+                    if (LOWORD(obj) == objects[i].usage && HIWORD(obj) == objects[i].usagePage)
+                    {
+                        return i;
+                    }
+                    break;
+            }
+        }
+
+        return -1;
+    }
+
+    void push_event_locked(DWORD ofs, DWORD data)
+    {
+        if (m_bufferCount == m_bufferSize)
+        {
+            // Keep the newest input: for a wheel the latest position matters.
+            m_overflow = true;
+            m_bufferHead = (m_bufferHead + 1) % m_bufferSize;
+            m_bufferCount--;
+        }
+
+        DIDEVICEOBJECTDATA& e = m_buffer[(m_bufferHead + m_bufferCount) % m_bufferSize];
+        ZeroMemory(&e, sizeof(e));
+        e.dwOfs = ofs;
+        e.dwData = data;
+        e.dwTimeStamp = GetTickCount();
+        e.dwSequence = ++g_inputSequence;
+
+        m_bufferCount++;
+    }
+
+    HRESULT get_property_locked(ULONG_PTR prop, LPDIPROPHEADER pdiph) const
+    {
+        const VirtualObject* objects = virtual_objects();
+        int obj = -1;
+
+        if (pdiph->dwHow != DIPH_DEVICE)
+        {
+            obj = find_object_locked(pdiph->dwObj, pdiph->dwHow);
+
+            if (obj < 0)
+            {
+                return DIERR_OBJECTNOTFOUND;
+            }
+        }
+
+        int axis = (obj >= 0 && objects[obj].kind == VOBJ_AXIS) ? objects[obj].index : -1;
+
+        if (prop == DIPROP_ID(DIPROP_RANGE) ||
+            prop == DIPROP_ID(DIPROP_LOGICALRANGE) ||
+            prop == DIPROP_ID(DIPROP_PHYSICALRANGE))
+        {
+            if (pdiph->dwSize != sizeof(DIPROPRANGE))
+            {
+                return DIERR_INVALIDPARAM;
+            }
+
+            if (axis < 0)
+            {
+                return DIERR_UNSUPPORTED;
+            }
+
+            LPDIPROPRANGE range = (LPDIPROPRANGE)pdiph;
+
+            if (prop == DIPROP_ID(DIPROP_RANGE))
+            {
+                range->lMin = m_rangeMin[axis];
+                range->lMax = m_rangeMax[axis];
+            }
+            else
+            {
+                range->lMin = 0;
+                range->lMax = objects[obj].logicalMax;
+            }
+
+            return DI_OK;
+        }
+
+        if (prop == DIPROP_ID(DIPROP_GUIDANDPATH))
+        {
+            if (pdiph->dwSize != sizeof(DIPROPGUIDANDPATH))
+            {
+                return DIERR_INVALIDPARAM;
+            }
+
+            LPDIPROPGUIDANDPATH path = (LPDIPROPGUIDANDPATH)pdiph;
+            path->guidClass = kHIDClassGuid;
+            lstrcpynW(path->wszPath, G29_DEVICE_PATH, MAX_PATH);
+            return DI_OK;
+        }
+
+        if (prop == DIPROP_ID(DIPROP_INSTANCENAME) ||
+            prop == DIPROP_ID(DIPROP_PRODUCTNAME) ||
+            prop == DIPROP_ID(DIPROP_TYPENAME))
+        {
+            if (pdiph->dwSize != sizeof(DIPROPSTRING))
+            {
+                return DIERR_INVALIDPARAM;
+            }
+
+            LPDIPROPSTRING text = (LPDIPROPSTRING)pdiph;
+            lstrcpynW(text->wsz, prop == DIPROP_ID(DIPROP_TYPENAME) ? G29_TYPE_NAME : G29_PRODUCT_NAME, MAX_PATH);
+            return DI_OK;
+        }
+
+        DWORD value = 0;
+
+        if (prop == DIPROP_ID(DIPROP_BUFFERSIZE))
+        {
+            value = m_bufferSize;
+        }
+        else if (prop == DIPROP_ID(DIPROP_AXISMODE))
+        {
+            value = DIPROPAXISMODE_ABS;
+        }
+        else if (prop == DIPROP_ID(DIPROP_GRANULARITY))
+        {
+            value = 1;
+        }
+        else if (prop == DIPROP_ID(DIPROP_DEADZONE) || prop == DIPROP_ID(DIPROP_SATURATION))
+        {
+            if (axis < 0)
+            {
+                return DIERR_UNSUPPORTED;
+            }
+
+            value = prop == DIPROP_ID(DIPROP_DEADZONE) ? m_deadzone[axis] : m_saturation[axis];
+        }
+        else if (prop == DIPROP_ID(DIPROP_CALIBRATIONMODE))
+        {
+            value = DIPROPCALIBRATIONMODE_COOKED;
+        }
+        else if (prop == DIPROP_ID(DIPROP_FFGAIN))
+        {
+            value = m_ffGain;
+        }
+        else if (prop == DIPROP_ID(DIPROP_FFLOAD))
+        {
+            value = 0;
+        }
+        else if (prop == DIPROP_ID(DIPROP_AUTOCENTER))
+        {
+            value = m_autocenter;
+        }
+        else if (prop == DIPROP_ID(DIPROP_JOYSTICKID))
+        {
+            value = 0;
+        }
+        else if (prop == DIPROP_ID(DIPROP_VIDPID))
+        {
+            value = MAKELONG(G29_VENDOR_ID, G29_PRODUCT_ID);
+        }
+        else
+        {
+            return DIERR_UNSUPPORTED;
+        }
+
+        if (pdiph->dwSize != sizeof(DIPROPDWORD))
+        {
+            return DIERR_INVALIDPARAM;
+        }
+
+        ((LPDIPROPDWORD)pdiph)->dwData = value;
+        return DI_OK;
+    }
+
+    HRESULT set_property_locked(ULONG_PTR prop, LPCDIPROPHEADER pdiph)
+    {
+        const VirtualObject* objects = virtual_objects();
+        int obj = -1;
+
+        if (pdiph->dwHow != DIPH_DEVICE)
+        {
+            obj = find_object_locked(pdiph->dwObj, pdiph->dwHow);
+
+            if (obj < 0)
+            {
+                return DIERR_OBJECTNOTFOUND;
+            }
+        }
+
+        // DIPH_DEVICE applies an axis property to every axis.
+        int firstAxis = 0;
+        int lastAxis = WHEEL_AXIS_COUNT - 1;
+
+        if (obj >= 0)
+        {
+            if (objects[obj].kind != VOBJ_AXIS)
+            {
+                firstAxis = 1;
+                lastAxis = 0;
+            }
+            else
+            {
+                firstAxis = lastAxis = objects[obj].index;
+            }
+        }
+
+        if (prop == DIPROP_ID(DIPROP_RANGE))
+        {
+            if (pdiph->dwSize != sizeof(DIPROPRANGE))
+            {
+                return DIERR_INVALIDPARAM;
+            }
+
+            LPCDIPROPRANGE range = (LPCDIPROPRANGE)pdiph;
+
+            if (range->lMin >= range->lMax)
+            {
+                return DIERR_INVALIDPARAM;
+            }
+
+            if (firstAxis > lastAxis)
+            {
+                return DIERR_UNSUPPORTED;
+            }
+
+            for (int a = firstAxis; a <= lastAxis; ++a)
+            {
+                m_rangeMin[a] = range->lMin;
+                m_rangeMax[a] = range->lMax;
+            }
+
+            return DI_OK;
+        }
+
+        if (prop == DIPROP_ID(DIPROP_APPDATA))
+        {
+            return DI_OK;
+        }
+
+        if (pdiph->dwSize != sizeof(DIPROPDWORD))
+        {
+            return DIERR_INVALIDPARAM;
+        }
+
+        DWORD value = ((LPCDIPROPDWORD)pdiph)->dwData;
+
+        if (prop == DIPROP_ID(DIPROP_DEADZONE) || prop == DIPROP_ID(DIPROP_SATURATION))
+        {
+            if (value > 10000)
+            {
+                return DIERR_INVALIDPARAM;
+            }
+
+            if (firstAxis > lastAxis)
+            {
+                return DIERR_UNSUPPORTED;
+            }
+
+            for (int a = firstAxis; a <= lastAxis; ++a)
+            {
+                if (prop == DIPROP_ID(DIPROP_DEADZONE))
+                {
+                    m_deadzone[a] = value;
+                }
+                else
+                {
+                    m_saturation[a] = value;
+                }
+            }
+
+            return DI_OK;
+        }
+
+        if (prop == DIPROP_ID(DIPROP_BUFFERSIZE))
+        {
+            if (value > VIRTUAL_MAX_BUFFER)
+            {
+                value = VIRTUAL_MAX_BUFFER;
+            }
+
+            delete[] m_buffer;
+            m_buffer = value ? new DIDEVICEOBJECTDATA[value] : NULL;
+            m_bufferSize = value;
+            m_bufferHead = 0;
+            m_bufferCount = 0;
+            m_overflow = false;
+            return DI_OK;
+        }
+
+        if (prop == DIPROP_ID(DIPROP_FFGAIN))
+        {
+            if (value > 10000)
+            {
+                return DIERR_INVALIDPARAM;
+            }
+
+            m_ffGain = value;
+            return DI_OK;
+        }
+
+        if (prop == DIPROP_ID(DIPROP_AUTOCENTER))
+        {
+            m_autocenter = value;
+            return DI_OK;
+        }
+
+        if (prop == DIPROP_ID(DIPROP_AXISMODE) || prop == DIPROP_ID(DIPROP_CALIBRATIONMODE))
+        {
+            return DI_OK;
+        }
+
+        return DIERR_UNSUPPORTED;
+    }
+
+public:
+    VirtualG29Device()
+        : m_refs(1),
+          m_acquired(false),
+          m_formatSet(false),
+          m_dataSize(0),
+          m_extraPovCount(0),
+          m_buffer(NULL),
+          m_bufferSize(0),
+          m_bufferHead(0),
+          m_bufferCount(0),
+          m_overflow(false),
+          m_event(NULL),
+          m_ffGain(10000),
+          m_autocenter(DIPROPAUTOCENTER_ON),
+          m_stateReads(0)
+    {
+        for (int i = 0; i < VIRTUAL_OBJECT_COUNT; ++i)
+        {
+            m_userOffset[i] = -1;
+        }
+
+        for (int a = 0; a < WHEEL_AXIS_COUNT; ++a)
+        {
+            m_rangeMin[a] = 0;
+            m_rangeMax[a] = 65535;
+            m_deadzone[a] = 0;
+            m_saturation[a] = 10000;
+        }
+
+        bool registered = false;
+
+        EnterCriticalSection(&g_inputLock);
+
+        for (int i = 0; i < VIRTUAL_MAX_DEVICES; ++i)
+        {
+            if (!g_virtualDevices[i])
+            {
+                g_virtualDevices[i] = this;
+                registered = true;
+                break;
+            }
+        }
+
+        LeaveCriticalSection(&g_inputLock);
+
+        log_line("VirtualG29 created device=%p registered=%s", this, yes_no(registered));
+    }
+
+    virtual ~VirtualG29Device()
+    {
+        EnterCriticalSection(&g_inputLock);
+
+        for (int i = 0; i < VIRTUAL_MAX_DEVICES; ++i)
+        {
+            if (g_virtualDevices[i] == this)
+            {
+                g_virtualDevices[i] = NULL;
+            }
+        }
+
+        delete[] m_buffer;
+        m_buffer = NULL;
+
+        LeaveCriticalSection(&g_inputLock);
+
+        log_line("VirtualG29 destroyed device=%p", this);
+    }
+
+    // Called by the reader thread with g_inputLock held.
+    void on_input_changed_locked(const WheelInput& before, const WheelInput& after)
+    {
+        if (!m_acquired)
+        {
+            return;
+        }
+
+        bool changed = false;
+
+        for (int i = 0; i < VIRTUAL_OBJECT_COUNT; ++i)
+        {
+            if (m_userOffset[i] < 0 || !object_changed(i, before, after))
+            {
+                continue;
+            }
+
+            changed = true;
+
+            if (m_bufferSize > 0)
+            {
+                push_event_locked((DWORD)m_userOffset[i], object_data_locked(i, after));
+            }
+        }
+
+        if (changed && m_event)
+        {
+            SetEvent(m_event);
+        }
+    }
+
+    HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void** ppvObject)
+    {
+        if (!ppvObject)
+        {
+            return E_POINTER;
+        }
+
+        // The older wide device interfaces are prefixes of IDirectInputDevice8W.
+        if (IsEqualGUID(riid, IID_IUnknown) ||
+            IsEqualGUID(riid, IID_IDirectInputDevice8W) ||
+            IsEqualGUID(riid, IID_IDirectInputDevice7W) ||
+            IsEqualGUID(riid, IID_IDirectInputDevice2W) ||
+            IsEqualGUID(riid, IID_IDirectInputDeviceW))
+        {
+            *ppvObject = static_cast<IDirectInputDevice8W*>(this);
+            AddRef();
+            return S_OK;
+        }
+
+        char iid[64] = {0};
+        guid_to_string(riid, iid, sizeof(iid));
+        log_line("VirtualG29::QueryInterface unsupported riid=%s", iid);
+
+        *ppvObject = NULL;
+        return E_NOINTERFACE;
+    }
+
+    ULONG STDMETHODCALLTYPE AddRef()
+    {
+        return (ULONG)InterlockedIncrement(&m_refs);
+    }
+
+    ULONG STDMETHODCALLTYPE Release()
+    {
+        LONG refs = InterlockedDecrement(&m_refs);
+
+        if (refs == 0)
+        {
+            delete this;
+            return 0;
+        }
+
+        return (ULONG)refs;
+    }
+
+    HRESULT STDMETHODCALLTYPE GetCapabilities(LPDIDEVCAPS lpDIDevCaps)
+    {
+        if (!lpDIDevCaps)
+        {
+            return E_POINTER;
+        }
+
+        DWORD size = lpDIDevCaps->dwSize;
+
+        if (size != sizeof(DIDEVCAPS) && size != sizeof(DIDEVCAPS_DX3))
+        {
+            return DIERR_INVALIDPARAM;
+        }
+
+        // The flags the Step 12 patch produced on Wine's device.
+        DIDEVCAPS caps;
+        ZeroMemory(&caps, sizeof(caps));
+        caps.dwSize = size;
+        caps.dwFlags =
+            DIDC_ATTACHED |
+            DIDC_EMULATED |
+            DIDC_FORCEFEEDBACK |
+            DIDC_FFFADE |
+            DIDC_FFATTACK |
+            DIDC_POSNEGCOEFFICIENTS |
+            DIDC_POSNEGSATURATION |
+            DIDC_SATURATION;
+        caps.dwDevType = G29_DEVICE_TYPE;
+        caps.dwAxes = WHEEL_AXIS_COUNT;
+        caps.dwButtons = WHEEL_BUTTON_COUNT;
+        caps.dwPOVs = 1;
+        caps.dwFFSamplePeriod = 1000;
+        caps.dwFFMinTimeResolution = 1000;
+        caps.dwFFDriverVersion = 1;
+
+        memcpy(lpDIDevCaps, &caps, size);
+
+        log_line(
+            "VirtualG29::GetCapabilities flags=0x%08lx axes=%lu buttons=%lu povs=%lu",
+            (unsigned long)caps.dwFlags,
+            (unsigned long)caps.dwAxes,
+            (unsigned long)caps.dwButtons,
+            (unsigned long)caps.dwPOVs
+        );
+
+        return DI_OK;
+    }
+
+    HRESULT STDMETHODCALLTYPE EnumObjects(LPDIENUMDEVICEOBJECTSCALLBACKW lpCallback, LPVOID pvRef, DWORD dwFlags)
+    {
+        if (!lpCallback)
+        {
+            return DIERR_INVALIDPARAM;
+        }
+
+        const VirtualObject* objects = virtual_objects();
+        DIDEVICEOBJECTINSTANCEW items[VIRTUAL_OBJECT_COUNT];
+        int count = 0;
+
+        EnterCriticalSection(&g_inputLock);
+
+        for (int i = 0; i < VIRTUAL_OBJECT_COUNT; ++i)
+        {
+            if (!object_matches_enum_filter(objects[i], dwFlags))
+            {
+                continue;
+            }
+
+            items[count].dwSize = sizeof(DIDEVICEOBJECTINSTANCEW);
+            fill_object_instance(objects[i], reported_offset_locked(i), &items[count]);
+            count++;
+        }
+
+        LeaveCriticalSection(&g_inputLock);
+
+        log_line("VirtualG29::EnumObjects flags=0x%08lx objects=%d", (unsigned long)dwFlags, count);
+
+        for (int i = 0; i < count; ++i)
+        {
+            if (lpCallback(&items[i], pvRef) == DIENUM_STOP)
+            {
+                break;
+            }
+        }
+
+        return DI_OK;
+    }
+
+    HRESULT STDMETHODCALLTYPE GetProperty(REFGUID rguidProp, LPDIPROPHEADER pdiph)
+    {
+        if (!pdiph || pdiph->dwHeaderSize != sizeof(DIPROPHEADER))
+        {
+            return DIERR_INVALIDPARAM;
+        }
+
+        ULONG_PTR prop = DIPROP_ID(rguidProp);
+
+        EnterCriticalSection(&g_inputLock);
+        HRESULT hr = get_property_locked(prop, pdiph);
+        LeaveCriticalSection(&g_inputLock);
+
+        log_line(
+            "VirtualG29::GetProperty prop=%lu obj=0x%lx how=%lu hr=0x%08lx %s",
+            (unsigned long)(prop <= 0xFFFF ? prop : 0),
+            (unsigned long)pdiph->dwObj,
+            (unsigned long)pdiph->dwHow,
+            (unsigned long)hr,
+            hresult_name(hr)
+        );
+
+        return hr;
+    }
+
+    HRESULT STDMETHODCALLTYPE SetProperty(REFGUID rguidProp, LPCDIPROPHEADER pdiph)
+    {
+        if (!pdiph || pdiph->dwHeaderSize != sizeof(DIPROPHEADER))
+        {
+            return DIERR_INVALIDPARAM;
+        }
+
+        ULONG_PTR prop = DIPROP_ID(rguidProp);
+
+        EnterCriticalSection(&g_inputLock);
+        HRESULT hr = set_property_locked(prop, pdiph);
+        LeaveCriticalSection(&g_inputLock);
+
+        long firstValue = pdiph->dwSize >= sizeof(DIPROPDWORD) ? (long)((LPCDIPROPDWORD)pdiph)->dwData : 0;
+        long secondValue = pdiph->dwSize >= sizeof(DIPROPRANGE) ? (long)((LPCDIPROPRANGE)pdiph)->lMax : 0;
+
+        log_line(
+            "VirtualG29::SetProperty prop=%lu obj=0x%lx how=%lu value=%ld,%ld hr=0x%08lx %s",
+            (unsigned long)(prop <= 0xFFFF ? prop : 0),
+            (unsigned long)pdiph->dwObj,
+            (unsigned long)pdiph->dwHow,
+            firstValue,
+            secondValue,
+            (unsigned long)hr,
+            hresult_name(hr)
+        );
+
+        return hr;
+    }
+
+    HRESULT STDMETHODCALLTYPE Acquire()
+    {
+        EnterCriticalSection(&g_inputLock);
+
+        if (!m_formatSet)
+        {
+            LeaveCriticalSection(&g_inputLock);
+            log_line("VirtualG29::Acquire without data format -> DIERR_INVALIDPARAM");
+            return DIERR_INVALIDPARAM;
+        }
+
+        if (m_acquired)
+        {
+            LeaveCriticalSection(&g_inputLock);
+            return S_FALSE;
+        }
+
+        m_acquired = true;
+        m_bufferHead = 0;
+        m_bufferCount = 0;
+        m_overflow = false;
+        m_stateReads = 0;
+
+        LeaveCriticalSection(&g_inputLock);
+
+        log_line("VirtualG29::Acquire");
+
+        tcp_send_line(PROXY_HELLO_LINE);
+        tcp_send_line("ACQUIRE");
+
+        return DI_OK;
+    }
+
+    HRESULT STDMETHODCALLTYPE Unacquire()
+    {
+        EnterCriticalSection(&g_inputLock);
+        bool wasAcquired = m_acquired;
+        m_acquired = false;
+        LeaveCriticalSection(&g_inputLock);
+
+        if (!wasAcquired)
+        {
+            return DI_NOEFFECT;
+        }
+
+        log_line("VirtualG29::Unacquire");
+        tcp_send_line("UNACQUIRE");
+
+        return DI_OK;
+    }
+
+    HRESULT STDMETHODCALLTYPE GetDeviceState(DWORD cbData, LPVOID lpvData)
+    {
+        if (!lpvData)
+        {
+            return DIERR_INVALIDPARAM;
+        }
+
+        EnterCriticalSection(&g_inputLock);
+
+        if (!m_acquired)
+        {
+            LeaveCriticalSection(&g_inputLock);
+            return DIERR_NOTACQUIRED;
+        }
+
+        if (cbData != m_dataSize)
+        {
+            LeaveCriticalSection(&g_inputLock);
+            return DIERR_INVALIDPARAM;
+        }
+
+        const VirtualObject* objects = virtual_objects();
+        BYTE* out = (BYTE*)lpvData;
+
+        memset(out, 0, cbData);
+
+        for (int i = 0; i < VIRTUAL_OBJECT_COUNT; ++i)
+        {
+            if (m_userOffset[i] < 0)
+            {
+                continue;
+            }
+
+            DWORD value = object_data_locked(i, g_wheelInput);
+
+            if (objects[i].kind == VOBJ_BUTTON)
+            {
+                out[m_userOffset[i]] = (BYTE)value;
+            }
+            else
+            {
+                memcpy(out + m_userOffset[i], &value, sizeof(value));
+            }
+        }
+
+        // The format may ask for more hats than the wheel has: centred.
+        for (DWORD i = 0; i < m_extraPovCount; ++i)
+        {
+            memset(out + m_extraPovOffsets[i], 0xFF, sizeof(DWORD));
+        }
+
+        DWORD reads = ++m_stateReads;
+        WheelInput snapshot = g_wheelInput;
+        bool live = g_bridgeInputLive;
+
+        LeaveCriticalSection(&g_inputLock);
+
+        if (reads == 1 || (reads % VIRTUAL_STATE_LOG_EVERY) == 0)
+        {
+            log_line(
+                "VirtualG29::GetDeviceState read=%lu size=%lu live=%s x=%ld y=%ld z=%ld rz=%ld hat=%lu buttons=0x%07lx",
+                (unsigned long)reads,
+                (unsigned long)cbData,
+                yes_no(live),
+                (long)snapshot.axes[0],
+                (long)snapshot.axes[1],
+                (long)snapshot.axes[2],
+                (long)snapshot.axes[3],
+                (unsigned long)snapshot.hat,
+                (unsigned long)snapshot.buttons
+            );
+        }
+
+        return DI_OK;
+    }
+
+    HRESULT STDMETHODCALLTYPE GetDeviceData(DWORD cbObjectData, LPDIDEVICEOBJECTDATA rgdod, LPDWORD pdwInOut, DWORD dwFlags)
+    {
+        if (!pdwInOut)
+        {
+            return DIERR_INVALIDPARAM;
+        }
+
+        if (cbObjectData != sizeof(DIDEVICEOBJECTDATA) && cbObjectData != sizeof(DIDEVICEOBJECTDATA_DX3))
+        {
+            return DIERR_INVALIDPARAM;
+        }
+
+        EnterCriticalSection(&g_inputLock);
+
+        if (!m_acquired)
+        {
+            LeaveCriticalSection(&g_inputLock);
+            return DIERR_NOTACQUIRED;
+        }
+
+        if (m_bufferSize == 0)
+        {
+            LeaveCriticalSection(&g_inputLock);
+            return DIERR_NOTBUFFERED;
+        }
+
+        DWORD count = *pdwInOut < m_bufferCount ? *pdwInOut : m_bufferCount;
+
+        if (rgdod)
+        {
+            for (DWORD i = 0; i < count; ++i)
+            {
+                memcpy(
+                    (BYTE*)rgdod + i * cbObjectData,
+                    &m_buffer[(m_bufferHead + i) % m_bufferSize],
+                    cbObjectData
+                );
+            }
+        }
+
+        HRESULT hr = m_overflow ? DI_BUFFEROVERFLOW : DI_OK;
+
+        if (!(dwFlags & DIGDD_PEEK))
+        {
+            m_bufferHead = (m_bufferHead + count) % m_bufferSize;
+            m_bufferCount -= count;
+            m_overflow = false;
+        }
+
+        LeaveCriticalSection(&g_inputLock);
+
+        *pdwInOut = count;
+        return hr;
+    }
+
+    HRESULT STDMETHODCALLTYPE SetDataFormat(LPCDIDATAFORMAT lpdf)
+    {
+        if (!lpdf ||
+            lpdf->dwSize != sizeof(DIDATAFORMAT) ||
+            lpdf->dwObjSize != sizeof(DIOBJECTDATAFORMAT) ||
+            (lpdf->dwNumObjs > 0 && !lpdf->rgodf))
+        {
+            return DIERR_INVALIDPARAM;
+        }
+
+        const VirtualObject* objects = virtual_objects();
+        int mapped = 0;
+        int unmatched = 0;
+
+        EnterCriticalSection(&g_inputLock);
+
+        if (m_acquired)
+        {
+            LeaveCriticalSection(&g_inputLock);
+            return DIERR_ACQUIRED;
+        }
+
+        bool used[VIRTUAL_OBJECT_COUNT] = {false};
+
+        for (int i = 0; i < VIRTUAL_OBJECT_COUNT; ++i)
+        {
+            m_userOffset[i] = -1;
+        }
+
+        m_extraPovCount = 0;
+
+        for (DWORD f = 0; f < lpdf->dwNumObjs; ++f)
+        {
+            const DIOBJECTDATAFORMAT& od = lpdf->rgodf[f];
+            int match = -1;
+
+            for (int i = 0; i < VIRTUAL_OBJECT_COUNT; ++i)
+            {
+                if (!used[i] && object_matches_format(objects[i], od))
+                {
+                    match = i;
+                    break;
+                }
+            }
+
+            bool isButton = match >= 0
+                ? objects[match].kind == VOBJ_BUTTON
+                : (DIDFT_GETTYPE(od.dwType) & DIDFT_BUTTON) != 0;
+            DWORD size = isButton ? 1 : sizeof(DWORD);
+
+            if (od.dwOfs + size > lpdf->dwDataSize)
+            {
+                unmatched++;
+                continue;
+            }
+
+            if (match >= 0)
+            {
+                used[match] = true;
+                m_userOffset[match] = (LONG)od.dwOfs;
+                mapped++;
+            }
+            else
+            {
+                unmatched++;
+
+                bool isPov = (od.pguid && IsEqualGUID(*od.pguid, GUID_POV)) ||
+                    (DIDFT_GETTYPE(od.dwType) & DIDFT_POV) != 0;
+
+                if (isPov && m_extraPovCount < VIRTUAL_MAX_EXTRA_POVS)
+                {
+                    m_extraPovOffsets[m_extraPovCount++] = od.dwOfs;
+                }
+            }
+        }
+
+        m_dataSize = lpdf->dwDataSize;
+        m_formatSet = true;
+
+        LeaveCriticalSection(&g_inputLock);
+
+        log_line(
+            "VirtualG29::SetDataFormat dataSize=%lu objects=%lu mapped=%d unmatched=%d flags=0x%08lx",
+            (unsigned long)lpdf->dwDataSize,
+            (unsigned long)lpdf->dwNumObjs,
+            mapped,
+            unmatched,
+            (unsigned long)lpdf->dwFlags
+        );
+
+        return DI_OK;
+    }
+
+    HRESULT STDMETHODCALLTYPE SetEventNotification(HANDLE hEvent)
+    {
+        EnterCriticalSection(&g_inputLock);
+
+        if (m_acquired)
+        {
+            LeaveCriticalSection(&g_inputLock);
+            return DIERR_ACQUIRED;
+        }
+
+        m_event = hEvent;
+
+        LeaveCriticalSection(&g_inputLock);
+
+        log_line("VirtualG29::SetEventNotification event=%p", hEvent);
+        return DI_OK;
+    }
+
+    HRESULT STDMETHODCALLTYPE SetCooperativeLevel(HWND hwnd, DWORD dwFlags)
+    {
+        log_line("VirtualG29::SetCooperativeLevel hwnd=%p flags=0x%08lx", hwnd, (unsigned long)dwFlags);
+        return DI_OK;
+    }
+
+    HRESULT STDMETHODCALLTYPE GetObjectInfo(LPDIDEVICEOBJECTINSTANCEW pdidoi, DWORD dwObj, DWORD dwHow)
+    {
+        if (!pdidoi || dwHow == DIPH_DEVICE)
+        {
+            return DIERR_INVALIDPARAM;
+        }
+
+        EnterCriticalSection(&g_inputLock);
+        int i = find_object_locked(dwObj, dwHow);
+        DWORD ofs = i >= 0 ? reported_offset_locked(i) : 0;
+        LeaveCriticalSection(&g_inputLock);
+
+        if (i < 0)
+        {
+            log_line("VirtualG29::GetObjectInfo obj=0x%lx how=%lu not found", (unsigned long)dwObj, (unsigned long)dwHow);
+            return DIERR_OBJECTNOTFOUND;
+        }
+
+        return fill_object_instance(virtual_objects()[i], ofs, pdidoi);
+    }
+
+    HRESULT STDMETHODCALLTYPE GetDeviceInfo(LPDIDEVICEINSTANCEW pdidi)
+    {
+        if (!pdidi)
+        {
+            return E_POINTER;
+        }
+
+        return fill_virtual_instance(pdidi);
+    }
+
+    HRESULT STDMETHODCALLTYPE RunControlPanel(HWND hwndOwner, DWORD dwFlags)
+    {
+        (void)hwndOwner;
+        (void)dwFlags;
+        return DI_OK;
+    }
+
+    HRESULT STDMETHODCALLTYPE Initialize(HINSTANCE hinst, DWORD dwVersion, REFGUID rguid)
+    {
+        (void)hinst;
+        (void)dwVersion;
+        (void)rguid;
+        return DI_OK;
+    }
+
+    HRESULT STDMETHODCALLTYPE CreateEffect(REFGUID rguid, LPCDIEFFECT lpeff, LPDIRECTINPUTEFFECT* ppdeff, LPUNKNOWN punkOuter)
+    {
+        (void)punkOuter;
+
+        log_line("VirtualG29::CreateEffect name=%s", effect_guid_to_string(rguid));
+        return g29_create_effect(rguid, lpeff, ppdeff);
+    }
+
+    HRESULT STDMETHODCALLTYPE EnumEffects(LPDIENUMEFFECTSCALLBACKW lpCallback, LPVOID pvRef, DWORD dwEffType)
+    {
+        log_line("VirtualG29::EnumEffects effType=0x%08lx", (unsigned long)dwEffType);
+        return g29_enum_effects(lpCallback, pvRef);
+    }
+
+    HRESULT STDMETHODCALLTYPE GetEffectInfo(LPDIEFFECTINFOW pdei, REFGUID rguid)
+    {
+        return g29_get_effect_info(pdei, rguid);
+    }
+
+    HRESULT STDMETHODCALLTYPE GetForceFeedbackState(LPDWORD pdwOut)
+    {
+        if (pdwOut)
+        {
+            *pdwOut = 0;
+        }
+
+        return DI_OK;
+    }
+
+    HRESULT STDMETHODCALLTYPE SendForceFeedbackCommand(DWORD dwFlags)
+    {
+        log_line("VirtualG29::SendForceFeedbackCommand flags=0x%08lx", (unsigned long)dwFlags);
+        return g29_send_force_feedback_command(dwFlags);
+    }
+
+    HRESULT STDMETHODCALLTYPE EnumCreatedEffectObjects(LPDIENUMCREATEDEFFECTOBJECTSCALLBACK lpCallback, LPVOID pvRef, DWORD fl)
+    {
+        (void)lpCallback;
+        (void)pvRef;
+        (void)fl;
+        return DI_OK;
+    }
+
+    HRESULT STDMETHODCALLTYPE Escape(LPDIEFFESCAPE pesc)
+    {
+        (void)pesc;
+        log_line("VirtualG29::Escape -> DIERR_UNSUPPORTED");
+        return DIERR_UNSUPPORTED;
+    }
+
+    HRESULT STDMETHODCALLTYPE Poll()
+    {
+        EnterCriticalSection(&g_inputLock);
+        bool acquired = m_acquired;
+        LeaveCriticalSection(&g_inputLock);
+
+        return acquired ? DI_OK : DIERR_NOTACQUIRED;
+    }
+
+    HRESULT STDMETHODCALLTYPE SendDeviceData(DWORD cbObjectData, LPCDIDEVICEOBJECTDATA rgdod, LPDWORD pdwInOut, DWORD fl)
+    {
+        (void)cbObjectData;
+        (void)rgdod;
+        (void)pdwInOut;
+        (void)fl;
+        log_line("VirtualG29::SendDeviceData -> DIERR_UNSUPPORTED");
+        return DIERR_UNSUPPORTED;
+    }
+
+    HRESULT STDMETHODCALLTYPE EnumEffectsInFile(LPCWSTR lpszFileName, LPDIENUMEFFECTSINFILECALLBACK pec, LPVOID pvRef, DWORD dwFlags)
+    {
+        (void)lpszFileName;
+        (void)pec;
+        (void)pvRef;
+        (void)dwFlags;
+        return DIERR_UNSUPPORTED;
+    }
+
+    HRESULT STDMETHODCALLTYPE WriteEffectToFile(LPCWSTR lpszFileName, DWORD dwEntries, LPDIFILEEFFECT rgDiFileEft, DWORD dwFlags)
+    {
+        (void)lpszFileName;
+        (void)dwEntries;
+        (void)rgDiFileEft;
+        (void)dwFlags;
+        return DIERR_UNSUPPORTED;
+    }
+
+    HRESULT STDMETHODCALLTYPE BuildActionMap(LPDIACTIONFORMATW lpdiaf, LPCWSTR lpszUserName, DWORD dwFlags)
+    {
+        (void)lpdiaf;
+        (void)lpszUserName;
+        log_line("VirtualG29::BuildActionMap flags=0x%08lx -> DIERR_UNSUPPORTED", (unsigned long)dwFlags);
+        return DIERR_UNSUPPORTED;
+    }
+
+    HRESULT STDMETHODCALLTYPE SetActionMap(LPDIACTIONFORMATW lpdiActionFormat, LPCWSTR lptszUserName, DWORD dwFlags)
+    {
+        (void)lpdiActionFormat;
+        (void)lptszUserName;
+        log_line("VirtualG29::SetActionMap flags=0x%08lx -> DIERR_UNSUPPORTED", (unsigned long)dwFlags);
+        return DIERR_UNSUPPORTED;
+    }
+
+    HRESULT STDMETHODCALLTYPE GetImageInfo(LPDIDEVICEIMAGEINFOHEADERW lpdiDevImageInfoHeader)
+    {
+        (void)lpdiDevImageInfoHeader;
+        return DIERR_UNSUPPORTED;
+    }
+};
+
+static void virtual_devices_input_changed_locked(const WheelInput& before, const WheelInput& after)
+{
+    for (int i = 0; i < VIRTUAL_MAX_DEVICES; ++i)
+    {
+        if (g_virtualDevices[i])
+        {
+            g_virtualDevices[i]->on_input_changed_locked(before, after);
+        }
+    }
+}
+
+// Whether an EnumDevices request covers game controllers, and so the wheel.
+static bool enum_class_includes_wheel(DWORD dwDevType)
+{
+    return
+        dwDevType == DI8DEVCLASS_ALL ||
+        dwDevType == DI8DEVCLASS_GAMECTRL ||
+        GET_DIDEVICE_TYPE(dwDevType) == DI8DEVTYPE_DRIVING;
+}
+
 struct EnumDevicesWContext
 {
     LPDIENUMDEVICESCALLBACKW originalCallback;
     LPVOID originalRef;
     DWORD requestedClass;
     DWORD requestedFlags;
+    bool sawG29;
+    bool wineGuidTaken;
+    bool stopped;
 };
 
 static BOOL CALLBACK enum_devices_w_logging_callback(const DIDEVICEINSTANCEW* instance, VOID* ref)
@@ -1520,6 +3301,15 @@ static BOOL CALLBACK enum_devices_w_logging_callback(const DIDEVICEINSTANCEW* in
 
     bool isG29 = instance_is_g29_w(instance);
     bool forceFeedbackRequested = (ctx->requestedFlags & DIEDFL_FORCEFEEDBACK) != 0;
+
+    if (isG29)
+    {
+        ctx->sawG29 = true;
+    }
+    else if (IsEqualGUID(instance->guidInstance, kWineG29InstanceGuid))
+    {
+        ctx->wineGuidTaken = true;
+    }
 
     log_line(
         "DirectInput8WProxy::EnumDevices item class=0x%08lx className=%s flags=0x%08lx forceFeedbackRequested=%s type=0x%08lx typeName=%s instance='%s' product='%s' guidInstance=%s guidProduct=%s isG29=%s",
@@ -1566,22 +3356,7 @@ static BOOL CALLBACK enum_devices_w_logging_callback(const DIDEVICEINSTANCEW* in
 
             guid_to_string(patchedInstance.guidFFDriver, oldFFGuid, sizeof(oldFFGuid));
 
-            /*
-                We use a stable fake non-null GUID.
-                It does not need to correspond to a real Windows FF driver,
-                because CreateEffect is handled by our DeviceProxy.
-            */
-            patchedInstance.guidFFDriver.Data1 = 0xC24F046D;
-            patchedInstance.guidFFDriver.Data2 = 0xF00D;
-            patchedInstance.guidFFDriver.Data3 = 0x0001;
-            patchedInstance.guidFFDriver.Data4[0] = 0x90;
-            patchedInstance.guidFFDriver.Data4[1] = 0x29;
-            patchedInstance.guidFFDriver.Data4[2] = 0x47;
-            patchedInstance.guidFFDriver.Data4[3] = 0x32;
-            patchedInstance.guidFFDriver.Data4[4] = 0x39;
-            patchedInstance.guidFFDriver.Data4[5] = 0x46;
-            patchedInstance.guidFFDriver.Data4[6] = 0x46;
-            patchedInstance.guidFFDriver.Data4[7] = 0x42;
+            patchedInstance.guidFFDriver = kG29FFDriverGuid;
 
             guid_to_string(patchedInstance.guidFFDriver, newFFGuid, sizeof(newFFGuid));
 
@@ -1591,10 +3366,14 @@ static BOOL CALLBACK enum_devices_w_logging_callback(const DIDEVICEINSTANCEW* in
                 newFFGuid
             );
 
-            return ctx->originalCallback(&patchedInstance, ctx->originalRef);
+            BOOL result = ctx->originalCallback(&patchedInstance, ctx->originalRef);
+            ctx->stopped = result == DIENUM_STOP;
+            return result;
         }
 
-        return ctx->originalCallback(instance, ctx->originalRef);
+        BOOL result = ctx->originalCallback(instance, ctx->originalRef);
+        ctx->stopped = result == DIENUM_STOP;
+        return result;
     }
 
     return DIENUM_CONTINUE;
@@ -1674,6 +3453,19 @@ public:
             lplpDirectInputDevice,
             pUnkOuter
         );
+
+        if (g_virtualOffered && IsEqualGUID(rguid, g_virtualInstanceGuid))
+        {
+            if (!lplpDirectInputDevice)
+            {
+                return E_POINTER;
+            }
+
+            *lplpDirectInputDevice = new VirtualG29Device();
+
+            log_line("DirectInput8WProxy::CreateDevice returning virtual G29=%p", *lplpDirectInputDevice);
+            return DI_OK;
+        }
 
         IDirectInputDevice8W* realDevice = NULL;
 
@@ -1814,13 +3606,62 @@ public:
             (unsigned long)wineFlags
         );
 
+        if (ctx.sawG29 && !g_realG29Seen)
+        {
+            g_realG29Seen = true;
+            log_line("DirectInput8WProxy::EnumDevices real G29 present, virtual disabled");
+        }
+
+        if (SUCCEEDED(hr) && lpCallback && !ctx.stopped && !g_realG29Seen && enum_class_includes_wheel(dwDevType))
+        {
+            offer_virtual_g29(lpCallback, pvRef, ctx.wineGuidTaken);
+        }
+
         return hr;
+    }
+
+    // Wine enumerated no G29: add ours, provided the bridge can feed it.
+    static void offer_virtual_g29(LPDIENUMDEVICESCALLBACKW lpCallback, LPVOID pvRef, bool wineGuidTaken)
+    {
+        if (!g_virtualGuidChosen)
+        {
+            g_virtualInstanceGuid = wineGuidTaken ? kCrossFFBInstanceGuid : kWineG29InstanceGuid;
+            g_virtualGuidChosen = true;
+        }
+
+        if (!bridge_input_start())
+        {
+            log_line("DirectInput8WProxy::EnumDevices no G29 from Wine and bridge not reachable, virtual G29 not offered");
+            return;
+        }
+
+        DIDEVICEINSTANCEW instance;
+        ZeroMemory(&instance, sizeof(instance));
+        instance.dwSize = sizeof(instance);
+        fill_virtual_instance(&instance);
+
+        g_virtualOffered = true;
+
+        char guidText[64] = {0};
+        guid_to_string(instance.guidInstance, guidText, sizeof(guidText));
+
+        log_line("DirectInput8WProxy::EnumDevices offering virtual G29 guidInstance=%s", guidText);
+
+        lpCallback(&instance, pvRef);
     }
 
     HRESULT STDMETHODCALLTYPE GetDeviceStatus(REFGUID rguidInstance)
     {
         char guidText[64] = {0};
         guid_to_string(rguidInstance, guidText, sizeof(guidText));
+
+        // Reported attached even while the bridge reconnects: the reader
+        // keeps retrying and the state stays neutral in the meantime.
+        if (g_virtualOffered && IsEqualGUID(rguidInstance, g_virtualInstanceGuid))
+        {
+            log_line("DirectInput8WProxy::GetDeviceStatus virtual G29 guid=%s -> DI_OK", guidText);
+            return DI_OK;
+        }
 
         HRESULT hr = m_real->GetDeviceStatus(rguidInstance);
 
@@ -1935,18 +3776,24 @@ public:
 
 BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID reserved)
 {
-    (void)reserved;
-
     switch (reason)
     {
         case DLL_PROCESS_ATTACH:
             DisableThreadLibraryCalls(hModule);
-            log_line("DllMain PROCESS_ATTACH - proxy step17 tcp bridge loaded");
+            InitializeCriticalSection(&g_tcpLock);
+            InitializeCriticalSection(&g_inputLock);
+            log_line("DllMain PROCESS_ATTACH - proxy step18 tcp bridge loaded");
             break;
 
         case DLL_PROCESS_DETACH:
-            log_line("DllMain PROCESS_DETACH - proxy step17 tcp unloaded");
-            tcp_close();
+            log_line("DllMain PROCESS_DETACH - proxy step18 tcp unloaded");
+
+            // At process exit other threads are already gone, possibly while
+            // holding g_tcpLock, and the system closes the socket anyway.
+            if (reserved == NULL)
+            {
+                tcp_close();
+            }
             break;
     }
 

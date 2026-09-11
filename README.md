@@ -47,6 +47,13 @@ CrossFFB does **not** install a kernel extension or a macOS driver.
 
 The Windows proxy is installed locally in the selected game folder.
 
+Since macOS 27, CrossOver no longer detects the G29 by itself, which took away
+the wheel and its force feedback in every game. When the game's list of
+controllers comes back without the wheel, the proxy adds it: the bridge reads
+steering, pedals, hat and buttons and passes them back, so the game sees the G29
+it used to. If CrossOver detects the wheel again, the proxy steps aside and
+nothing changes.
+
 ---
 
 ## Installation
@@ -199,6 +206,17 @@ Check that:
 - You selected the correct game folder.
 - You are running the 64-bit version of the game.
 
+### The game does not list the wheel
+
+On macOS 27 the wheel reaches the game through CrossFFB, and the proxy looks for
+the bridge when the game builds its list of controllers, usually at start.
+Start CrossFFB, with both lamps ready to go, before the game. If the game
+still lists no wheel, `dinput8_proxy.log` says whether the bridge was reachable.
+
+Pedal bindings made before macOS 27 may need redoing once: the axes now follow
+Windows - X for steering, Y, Z and Z Rotation for the pedals - rather than the
+order CrossOver used.
+
 ### Force feedback is too weak or too strong
 
 Adjust **FORCE** in the panel, while driving if you like - it applies straight
@@ -263,6 +281,10 @@ scripts/prepare_resources.sh
 The results are written to `build/resources/`, which is not tracked by git. The
 bridge is built as a universal binary (arm64 + x86_64); the Xcode build narrows it
 to whatever architectures the current build is targeting.
+
+`scripts/build_wheel_probe.sh` builds `wheel_probe.exe`, a console tool that
+reads the G29 through DirectInput the way a game does. It is not bundled: copy it
+with `dinput8.dll` into a folder inside the bottle's `drive_c` and run it there.
 
 ### Release builds
 

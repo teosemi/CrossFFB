@@ -2,6 +2,29 @@
 
 All notable changes to CrossFFB are documented here.
 
+## Unreleased
+
+### Added
+
+- On macOS 27 CrossOver no longer detects the G29, so games saw neither the
+  wheel nor its force feedback. When the game's list of controllers comes back
+  without it, the proxy now adds the G29 itself: the bridge reads steering,
+  pedals, hat and buttons and streams them back over the same connection, and
+  the proxy serves them the way DirectInput does - standard and custom data
+  formats, buffered input, ranges, dead zones - next to the force feedback it
+  already handled. The wheel keeps the identity Wine gave it; the axes follow
+  Windows, so pedal bindings made under Wine may need redoing once. If CrossOver
+  detects the wheel again, the proxy steps aside. A lost bridge leaves the
+  pedals released rather than stuck.
+- `GET_INPUT` on the control port prints what the bridge reads from the wheel,
+  and `scripts/build_wheel_probe.sh` builds a console tool that reads the G29
+  through DirectInput inside a bottle.
+
+### Fixed
+
+- Unplugging the wheel no longer trips a guard fault in the bridge: the
+  watchdog closed the listening socket and the loop went on to use it.
+
 ## 1.1.0
 
 ### Changed

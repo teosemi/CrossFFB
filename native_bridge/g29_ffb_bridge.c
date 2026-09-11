@@ -61,6 +61,32 @@
 #define DEFAULT_DAMPER_ENABLED 1
 #define DEFAULT_DAMPER_GAIN 1.00
 
+// Input del volante. Da macOS 27 Wine non enumera piu' il G29, quindi il
+// proxy espone un G29 virtuale e il bridge gli passa lo stato letto qui.
+// Layout del report di input del G29 (PID C24F, nessun report ID), dal
+// descrittore HID:
+//   bit  0-3   hat switch, 0-7, 8 = centro
+//   bit  4-28  25 pulsanti
+//   byte 4-5   X, sterzo, 16 bit
+//   byte 6     Z
+//   byte 7     Rz
+//   byte 8     Y
+#define INPUT_REPORT_BUFFER_SIZE 64
+#define INPUT_REPORT_MIN_LENGTH  9
+#define INPUT_HAT_CENTERED       8
+#define INPUT_PUMP_SECONDS       0.002
+#define INPUT_SEND_TIMEOUT_USEC  100000
+
+struct wheel_input
+{
+    unsigned x;
+    unsigned y;
+    unsigned z;
+    unsigned rz;
+    unsigned hat;
+    uint32_t buttons;
+};
+
 static volatile sig_atomic_t g_running = 1;
 
 static IOHIDManagerRef g_hid_manager = NULL;
@@ -95,6 +121,14 @@ static double g_last_stop_ts = 0.0;
 static double g_last_wheel_check_ts = 0.0;
 static int g_hid_write_failures = 0;
 static int g_wheel_lost = 0;
+
+static uint8_t g_input_report[INPUT_REPORT_BUFFER_SIZE];
+static int g_input_scheduled = 0;
+static int g_input_report_count = 0;
+static int g_input_dirty = 0;
+static int g_input_subscribed = 0;
+static int g_input_sent_count = 0;
+static struct wheel_input g_input = {32768, 255, 255, 255, INPUT_HAT_CENTERED, 0};
 
 static void poll_control_socket(void);
 static void check_parent_watchdog(void);
@@ -687,6 +721,155 @@ static void wheel_send_constant_from_magnitude(int magnitude)
     }
 }
 
+static void input_report_callback(
+    void *context,
+    IOReturn result,
+    void *sender,
+    IOHIDReportType type,
+    uint32_t reportID,
+    uint8_t *report,
+    CFIndex reportLength)
+{
+    (void)context;
+    (void)sender;
+    (void)type;
+    (void)reportID;
+
+    if (result != kIOReturnSuccess || !report || reportLength < INPUT_REPORT_MIN_LENGTH)
+    {
+        return;
+    }
+
+    if (g_input_report_count++ == 0)
+    {
+        char hex[3 * INPUT_REPORT_BUFFER_SIZE + 1];
+        size_t used = 0;
+
+        for (CFIndex i = 0; i < reportLength && i < INPUT_REPORT_BUFFER_SIZE; i++)
+        {
+            used += (size_t)snprintf(hex + used, sizeof(hex) - used, " %02X", report[i]);
+        }
+
+        log_line("INPUT first report length=%ld:%s", (long)reportLength, hex);
+    }
+
+    struct wheel_input next;
+    next.hat = report[0] & 0x0F;
+    next.buttons =
+        ((uint32_t)report[0] >> 4) |
+        ((uint32_t)report[1] << 4) |
+        ((uint32_t)report[2] << 12) |
+        ((uint32_t)(report[3] & 0x1F) << 20);
+    next.x = (unsigned)report[4] | ((unsigned)report[5] << 8);
+    next.z = report[6];
+    next.rz = report[7];
+    next.y = report[8];
+
+    if (memcmp(&next, &g_input, sizeof(next)) != 0)
+    {
+        g_input = next;
+        g_input_dirty = 1;
+    }
+}
+
+static void format_input_state(char *out, size_t size)
+{
+    snprintf(
+        out,
+        size,
+        "STATE x=%u y=%u z=%u rz=%u hat=%u buttons=0x%07X",
+        g_input.x,
+        g_input.y,
+        g_input.z,
+        g_input.rz,
+        g_input.hat,
+        (unsigned)g_input.buttons
+    );
+}
+
+static void send_input_state(void)
+{
+    if (!g_input_subscribed || g_client_fd < 0)
+    {
+        return;
+    }
+
+    char line[160];
+    format_input_state(line, sizeof(line));
+
+    size_t len = strlen(line);
+    line[len++] = '\n';
+
+    size_t sent = 0;
+
+    while (sent < len)
+    {
+        ssize_t n = send(g_client_fd, line + sent, len - sent, 0);
+
+        if (n < 0)
+        {
+            if (errno == EINTR)
+            {
+                continue;
+            }
+
+            // Timeout (SO_SNDTIMEO) o socket chiuso: il proxy non legge piu'.
+            log_line("INPUT send failed: %s -> unsubscribed", strerror(errno));
+            g_input_subscribed = 0;
+            return;
+        }
+
+        sent += (size_t)n;
+    }
+
+    g_input_dirty = 0;
+    g_input_sent_count++;
+}
+
+// Serve i report HID arrivati nel frattempo e fa da attesa al posto di
+// usleep(). Tutto resta su un thread solo.
+static void pump_wheel_input(double seconds)
+{
+    if (g_input_scheduled)
+    {
+        SInt32 rc = CFRunLoopRunInMode(kCFRunLoopDefaultMode, seconds, false);
+
+        if (rc == kCFRunLoopRunFinished && seconds > 0.0)
+        {
+            usleep((useconds_t)(seconds * 1000000.0));
+        }
+    }
+    else if (seconds > 0.0)
+    {
+        usleep((useconds_t)(seconds * 1000000.0));
+    }
+
+    if (g_input_dirty)
+    {
+        send_input_state();
+    }
+}
+
+static void input_subscribe(void)
+{
+    if (g_client_fd >= 0)
+    {
+        struct timeval tv;
+        tv.tv_sec = 0;
+        tv.tv_usec = INPUT_SEND_TIMEOUT_USEC;
+        setsockopt(g_client_fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+    }
+
+    g_input_subscribed = 1;
+
+    char line[160];
+    format_input_state(line, sizeof(line));
+    log_line("RX INPUT_SUBSCRIBE scheduled=%d reports=%d current: %s", g_input_scheduled, g_input_report_count, line);
+
+    // Lo stato corrente subito, anche se il volante e' fermo.
+    send_input_state();
+}
+
 static int open_wheel(void)
 {
     g_hid_manager = IOHIDManagerCreate(kCFAllocatorDefault, kIOHIDOptionsTypeNone);
@@ -737,6 +920,20 @@ static int open_wheel(void)
         return 0;
     }
 
+    int maxInputSize = get_int_property(g_wheel, CFSTR(kIOHIDMaxInputReportSizeKey), -1);
+
+    IOHIDDeviceRegisterInputReportCallback(
+        g_wheel,
+        g_input_report,
+        sizeof(g_input_report),
+        input_report_callback,
+        NULL
+    );
+    IOHIDDeviceScheduleWithRunLoop(g_wheel, CFRunLoopGetCurrent(), kCFRunLoopDefaultMode);
+    g_input_scheduled = 1;
+
+    log_line("INPUT reports scheduled maxInputSize=%d", maxInputSize);
+
     wheel_init();
     return 1;
 }
@@ -749,6 +946,13 @@ static void close_wheel(void)
         wheel_stop_all("final stopAll F3", 1, 1);
         usleep(100000);
         wheel_spring_off(1);
+
+        if (g_input_scheduled)
+        {
+            IOHIDDeviceUnscheduleFromRunLoop(g_wheel, CFRunLoopGetCurrent(), kCFRunLoopDefaultMode);
+            IOHIDDeviceRegisterInputReportCallback(g_wheel, g_input_report, sizeof(g_input_report), NULL, NULL);
+            g_input_scheduled = 0;
+        }
 
         IOHIDDeviceClose(g_wheel, kIOHIDOptionsTypeNone);
         g_wheel = NULL;
@@ -871,6 +1075,19 @@ static void handle_line(const char *line)
     if (strncmp(line, "HELLO", 5) == 0)
     {
         log_line("RX %s", line);
+        return;
+    }
+
+    if (strcmp(line, "INPUT_SUBSCRIBE") == 0)
+    {
+        input_subscribe();
+        return;
+    }
+
+    if (strcmp(line, "INPUT_UNSUBSCRIBE") == 0)
+    {
+        log_line("RX INPUT_UNSUBSCRIBE sent=%d", g_input_sent_count);
+        g_input_subscribed = 0;
         return;
     }
 
@@ -1017,12 +1234,12 @@ static void handle_control_line(int client_fd, const char *line)
 
     if (strcmp(line, "GET_STATUS") == 0)
     {
-        char reply[256];
+        char reply[320];
 
         snprintf(
             reply,
             sizeof(reply),
-            "OK STATUS gain=%.2f range=%d invert=%d damper=%d damper_gain=%.2f damper_count=%d force_count=%d stop_count=%d skipped_stop=%d messages=%d",
+            "OK STATUS gain=%.2f range=%d invert=%d damper=%d damper_gain=%.2f damper_count=%d force_count=%d stop_count=%d skipped_stop=%d messages=%d input_subscribed=%d input_reports=%d input_sent=%d",
             g_force_gain,
             g_wheel_range_degrees,
             g_invert_force,
@@ -1032,8 +1249,23 @@ static void handle_control_line(int client_fd, const char *line)
             g_hid_force_count,
             g_hid_stop_count,
             g_hid_stop_skipped_count,
-            g_message_count
+            g_message_count,
+            g_input_subscribed,
+            g_input_report_count,
+            g_input_sent_count
         );
+
+        send_control_reply(client_fd, reply);
+        return;
+    }
+
+    if (strcmp(line, "GET_INPUT") == 0)
+    {
+        char state[160];
+        char reply[192];
+
+        format_input_state(state, sizeof(state));
+        snprintf(reply, sizeof(reply), "OK %s", state);
 
         send_control_reply(client_fd, reply);
         return;
@@ -1057,6 +1289,11 @@ static void handle_control_client(int client_fd)
         check_parent_watchdog();
         check_wheel_watchdog();
 
+        if (!g_running)
+        {
+            break;
+        }
+
         ssize_t n = recv(client_fd, recvbuf, sizeof(recvbuf), MSG_DONTWAIT);
 
         if (n == 0)
@@ -1073,7 +1310,7 @@ static void handle_control_client(int client_fd)
 
             if (errno == EAGAIN || errno == EWOULDBLOCK)
             {
-                usleep(10000);
+                pump_wheel_input(INPUT_PUMP_SECONDS);
                 continue;
             }
 
@@ -1189,6 +1426,12 @@ static void handle_client(int client_fd)
         check_parent_watchdog();
         check_wheel_watchdog();
 
+        // I watchdog possono aver chiuso i socket tramite handle_signal().
+        if (!g_running)
+        {
+            break;
+        }
+
         ssize_t n = recv(client_fd, recvbuf, sizeof(recvbuf), MSG_DONTWAIT);
 
         if (n == 0)
@@ -1206,8 +1449,16 @@ static void handle_client(int client_fd)
 
             if (errno == EAGAIN || errno == EWOULDBLOCK)
             {
-                usleep(10000);
+                pump_wheel_input(INPUT_PUMP_SECONDS);
                 continue;
+            }
+
+            // Un gioco che esce con righe STATE non ancora lette chiude con un
+            // reset invece di un FIN. L'app riconosce questa riga.
+            if (errno == ECONNRESET)
+            {
+                log_line("TCP client disconnected (reset)");
+                break;
             }
 
             log_line("recv failed: %s", strerror(errno));
@@ -1243,6 +1494,16 @@ static void handle_client(int client_fd)
                 }
             }
         }
+
+        // Anche sotto una raffica di comandi FFB l'input deve continuare a
+        // passare.
+        pump_wheel_input(0.0);
+    }
+
+    if (g_input_subscribed)
+    {
+        log_line("INPUT unsubscribed on disconnect sent=%d", g_input_sent_count);
+        g_input_subscribed = 0;
     }
 
     wheel_stop_all("client disconnect stopAll F3", 1, 1);
@@ -1440,6 +1701,10 @@ int main(int argc, char **argv)
     signal(SIGINT, handle_signal);
     signal(SIGTERM, handle_signal);
 
+    // Un gioco o l'app che chiudono il socket mentre il bridge scrive
+    // non devono terminare il processo.
+    signal(SIGPIPE, SIG_IGN);
+
     int parse_result = parse_args(argc, argv);
 
     if (parse_result <= 0)
@@ -1499,13 +1764,20 @@ int main(int argc, char **argv)
         check_parent_watchdog();
         check_wheel_watchdog();
 
+        // Un watchdog che scatta passa da handle_signal(), che chiude
+        // g_server_fd e lo porta a -1: FD_SET(-1) e' un fault su macOS 27.
+        if (!g_running || g_server_fd < 0)
+        {
+            break;
+        }
+
         fd_set readfds;
         FD_ZERO(&readfds);
         FD_SET(g_server_fd, &readfds);
 
         struct timeval tv;
         tv.tv_sec = 0;
-        tv.tv_usec = 100000;
+        tv.tv_usec = 0;
 
         int select_rc = select(g_server_fd + 1, &readfds, NULL, NULL, &tv);
 
@@ -1522,6 +1794,8 @@ int main(int argc, char **argv)
 
         if (select_rc == 0)
         {
+            // Attesa di un gioco: intanto si tiene aggiornato lo stato.
+            pump_wheel_input(0.010);
             continue;
         }
 
