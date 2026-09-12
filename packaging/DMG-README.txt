@@ -52,6 +52,19 @@ The proxy is installed only in the folder you chose. CrossFFB never
 replaces the CrossOver or Wine system DLLs.
 
 
+MACOS 27
+
+Since macOS 27, CrossOver no longer detects the G29 by itself. When a
+game finds no wheel, the proxy adds it: CrossFFB reads steering, pedals
+and buttons and hands them to the game, together with force feedback. If
+CrossOver detects the wheel again, the proxy steps aside on its own.
+
+- Start CrossFFB before the game: the proxy looks for it when the game
+  builds its list of controllers.
+- Pedal bindings made before macOS 27 may need redoing once. The axes now
+  follow Windows: X for steering, Y, Z and Z Rotation for the pedals.
+
+
 USING IT
 
 Click the steering wheel in the menu bar.
@@ -91,6 +104,11 @@ The GAME lamp stays dark:
 - Check that dinput8.dll sits next to the game executable.
 - Check the bottle override is dinput8 = native,builtin.
 - Check you picked the folder with the 64-bit executable.
+
+The game does not list the wheel:
+- Quit the game, start CrossFFB, wait for the WHEEL lamp, then start the
+  game again. dinput8_proxy.log, next to the game executable, says whether
+  the proxy reached CrossFFB.
 
 
 NOTES

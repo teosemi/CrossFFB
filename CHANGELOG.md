@@ -2,7 +2,10 @@
 
 All notable changes to CrossFFB are documented here.
 
-## Unreleased
+## 1.2.0
+
+Published as a separate pre-release, `v1.2.0-macos27`, for macOS 27.
+1.1.0 remains the release without the virtual wheel.
 
 ### Added
 
